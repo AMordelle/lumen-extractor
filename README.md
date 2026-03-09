@@ -44,3 +44,12 @@ En `output_v0/` se generan:
 ## Notas
 
 Este proyecto es un prototipo de validación y no implementa aún el pipeline final (SQLite, cobertura completa del tomo o optimización avanzada).
+
+
+## Iteración de mejoras (v0.2)
+
+- OCR tokenizado con `image_to_data` para usar posiciones y reforzar separación de columnas.
+- Corte de columnas por histograma de centros de tokens (reduce mezcla izquierda/derecha).
+- Exclusión de notas al pie a nivel de token (zona inferior + tamaño relativo de fuente + marcadores).
+- Segmentación de versículos más estricta por `^\d+\.` con controles de ruido para evitar absorción de notas.
+- Detección de libro robusta con normalización de acentos para cabeceras como `LIBRO DEL GÉNESIS` y `LIBRO DEL ÉXODO`.
