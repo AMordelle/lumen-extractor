@@ -53,3 +53,5 @@ Este proyecto es un prototipo de validación y no implementa aún el pipeline fi
 - Exclusión de notas al pie a nivel de token (zona inferior + tamaño relativo de fuente + marcadores).
 - Segmentación de versículos más estricta por `^\d+\.` con controles de ruido para evitar absorción de notas.
 - Detección de libro robusta con normalización de acentos para cabeceras como `LIBRO DEL GÉNESIS` y `LIBRO DEL ÉXODO`.
+
+- Nueva etapa previa: segmentación vertical de página (cabecera / cuerpo bíblico / notas), aplicando OCR solo al cuerpo para extracción de versículos.

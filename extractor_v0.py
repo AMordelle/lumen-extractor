@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extractor v0 (iteración 2) para validar OCR bíblico en 4 imágenes Torres Amat."""
+"""Extractor v0 (iteración 3) para validar OCR bíblico en 4 imágenes Torres Amat."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from statistics import median
 from typing import Any
-
 
 TARGET_IMAGES = [
     "AI156_0018.jpg",
@@ -89,7 +88,6 @@ class TorresAmatExtractorV0:
         self.columns_dir.mkdir(parents=True, exist_ok=True)
 
         processed = success = warnings = 0
-
         for image_name in TARGET_IMAGES:
             processed += 1
             report = self.process_image(self.images_dir / image_name)
@@ -109,33 +107,22 @@ class TorresAmatExtractorV0:
             return ImageReport(file_name=image_path.name, status="warning", observations=[obs])
 
         image = self.Image.open(image_path).convert("L")
-        tokens = self._ocr_tokens(image)
-        if not tokens:
-            obs = "OCR sin tokens detectables."
+        full_tokens = self._ocr_tokens(image, psm=3, min_conf=20)
+        if not full_tokens:
+            obs = "OCR sin tokens detectables en página completa."
             self._warn(image_path.name, obs)
             return ImageReport(file_name=image_path.name, status="warning", observations=[obs])
 
-        split_x, has_2_cols = self._detect_column_split(tokens, image.width)
-        columns = self._tokens_to_columns(tokens, split_x, has_2_cols)
+        body_top, body_bottom, seg_obs = self._segment_vertical_body(full_tokens, image.height)
+        report = ImageReport(file_name=image_path.name, status="ok")
+        report.observations.extend(seg_obs)
 
-        report = ImageReport(file_name=image_path.name, status="ok", columns_detected=2 if has_2_cols else 1)
-        if not has_2_cols:
-            report.status = "warning"
-            obs = "No se detectaron dos columnas con suficiente confianza."
-            report.observations.append(obs)
-            self._warn(image_path.name, obs)
+        header_img = image.crop((0, 0, image.width, body_top))
+        body_img = image.crop((0, body_top, image.width, body_bottom))
 
-        all_lines: list[str] = []
-        for idx, col_tokens in enumerate(columns, start=1):
-            body_tokens, footnote_obs = self._drop_footnote_tokens(col_tokens)
-            if footnote_obs:
-                report.observations.append(footnote_obs)
-
-            col_lines = self._tokens_to_lines(body_tokens)
-            self._save_column_text(image_path.name, idx, col_lines)
-            all_lines.extend(col_lines)
-
-        book, chapter = self._extract_metadata(all_lines)
+        header_tokens = self._ocr_tokens(header_img, psm=6, min_conf=15)
+        header_lines = self._tokens_to_lines(header_tokens)
+        book, chapter = self._extract_metadata(header_lines)
         report.book, report.chapter = book, chapter
 
         if book is None:
@@ -146,6 +133,32 @@ class TorresAmatExtractorV0:
             obs = "Capítulo no detectado en cabecera."
             report.observations.append(obs)
             self._warn(image_path.name, obs)
+
+        body_tokens = self._ocr_tokens(body_img, psm=3, min_conf=20)
+        if not body_tokens:
+            report.status = "warning"
+            obs = "OCR sin tokens en cuerpo bíblico segmentado."
+            report.observations.append(obs)
+            self._warn(image_path.name, obs)
+            return report
+
+        split_x, has_2_cols = self._detect_column_split(body_tokens, body_img.width)
+        columns = self._tokens_to_columns(body_tokens, split_x, has_2_cols)
+        report.columns_detected = 2 if has_2_cols else 1
+        if not has_2_cols:
+            report.status = "warning"
+            obs = "No se detectaron dos columnas con suficiente confianza en el cuerpo bíblico."
+            report.observations.append(obs)
+            self._warn(image_path.name, obs)
+
+        all_lines: list[str] = []
+        for idx, col_tokens in enumerate(columns, start=1):
+            body_only, foot_obs = self._drop_footnote_tokens(col_tokens)
+            if foot_obs:
+                report.observations.append(foot_obs)
+            col_lines = self._tokens_to_lines(body_only)
+            self._save_column_text(image_path.name, idx, col_lines)
+            all_lines.extend(col_lines)
 
         verses, v_obs = self._extract_verses(all_lines, image_path.name, book, chapter)
         self.verses.extend(verses)
@@ -159,12 +172,12 @@ class TorresAmatExtractorV0:
 
         return report
 
-    def _ocr_tokens(self, image: Any) -> list[OcrToken]:
+    def _ocr_tokens(self, image: Any, psm: int = 3, min_conf: float = 25) -> list[OcrToken]:
         enhanced = self.ImageOps.autocontrast(image)
         data = self.pytesseract.image_to_data(
             enhanced,
             lang="spa",
-            config="--oem 1 --psm 3",
+            config=f"--oem 1 --psm {psm}",
             output_type=self.pytesseract.Output.DICT,
         )
         tokens: list[OcrToken] = []
@@ -173,7 +186,7 @@ class TorresAmatExtractorV0:
             if not cleaned:
                 continue
             conf = float(data["conf"][i]) if data["conf"][i] not in ("-1", -1) else -1.0
-            if conf < 25:
+            if conf < min_conf:
                 continue
             tokens.append(
                 OcrToken(
@@ -186,6 +199,38 @@ class TorresAmatExtractorV0:
                 )
             )
         return tokens
+
+    def _segment_vertical_body(self, tokens: list[OcrToken], image_height: int) -> tuple[int, int, list[str]]:
+        obs: list[str] = []
+        heights = [max(1, t.height) for t in tokens]
+        med_h = median(heights) if heights else 12
+
+        verse_tops = [t.top for t in tokens if re.match(r"^\d{1,3}\.$", t.text)]
+        if verse_tops:
+            first_verse_top = min(verse_tops)
+            body_top = max(int(image_height * 0.10), int(first_verse_top - 2.2 * med_h))
+            obs.append(f"Inicio de cuerpo estimado por primer versículo en y={body_top}.")
+        else:
+            body_top = int(image_height * 0.18)
+            obs.append("Inicio de cuerpo estimado por fallback (sin marcador de versículo claro).")
+
+        tiny_bottom_tops = [
+            t.top for t in tokens if t.top > int(image_height * 0.70) and t.height < (0.82 * med_h)
+        ]
+        if tiny_bottom_tops:
+            foot_start = min(tiny_bottom_tops)
+            body_bottom = max(int(image_height * 0.72), int(foot_start - 1.8 * med_h))
+            obs.append(f"Zona de notas detectada desde y={foot_start}; cuerpo finaliza en y={body_bottom}.")
+        else:
+            body_bottom = int(image_height * 0.88)
+            obs.append("Fin de cuerpo estimado por fallback (sin patrón claro de nota al pie).")
+
+        if body_bottom <= body_top + int(6 * med_h):
+            body_top = int(image_height * 0.18)
+            body_bottom = int(image_height * 0.86)
+            obs.append("Segmentación vertical ajustada por rango insuficiente (fallback seguro).")
+
+        return body_top, body_bottom, obs
 
     def _detect_column_split(self, tokens: list[OcrToken], image_width: int) -> tuple[int, bool]:
         centers = [t.left + t.width // 2 for t in tokens]
@@ -221,25 +266,21 @@ class TorresAmatExtractorV0:
 
         left_col = [t for t in tokens if (t.left + t.width // 2) < split_x]
         right_col = [t for t in tokens if (t.left + t.width // 2) >= split_x]
-
-        # Evita mezcla: descarta outliers extremos por columna
-        left_col = sorted(left_col, key=lambda t: (t.top, t.left))
-        right_col = sorted(right_col, key=lambda t: (t.top, t.left))
-        return [left_col, right_col]
+        return [sorted(left_col, key=lambda t: (t.top, t.left)), sorted(right_col, key=lambda t: (t.top, t.left))]
 
     def _drop_footnote_tokens(self, tokens: list[OcrToken]) -> tuple[list[OcrToken], str | None]:
         if len(tokens) < 12:
             return tokens, None
 
-        tops = sorted([t.top for t in tokens])
+        tops = sorted(t.top for t in tokens)
         heights = [max(1, t.height) for t in tokens]
         median_h = median(heights)
-        cutoff_y = tops[int(len(tops) * 0.84)]
+        cutoff_y = tops[int(len(tops) * 0.88)]
 
         kept: list[OcrToken] = []
         dropped = 0
         for t in tokens:
-            tiny = t.height < (0.82 * median_h)
+            tiny = t.height < (0.80 * median_h)
             at_bottom = t.top >= cutoff_y
             fn_marker = bool(re.match(r"^\d+[\)\.]$", t.text))
             if at_bottom and (tiny or fn_marker):
@@ -247,9 +288,8 @@ class TorresAmatExtractorV0:
                 continue
             kept.append(t)
 
-        if dropped > 8:
-            msg = f"Bloque de notas al pie filtrado ({dropped} tokens descartados)."
-            return kept, msg
+        if dropped > 5:
+            return kept, f"Bloque de notas al pie filtrado ({dropped} tokens descartados)."
         return kept, None
 
     def _tokens_to_lines(self, tokens: list[OcrToken]) -> list[str]:
@@ -314,7 +354,6 @@ class TorresAmatExtractorV0:
             if not line:
                 continue
 
-            # omite rótulos editoriales antes del primer versículo
             if not started and EDITORIAL_RE.match(line):
                 continue
 
@@ -380,15 +419,13 @@ class TorresAmatExtractorV0:
 
     def _clean_line(self, line: str) -> str:
         line = re.sub(r"\s+", " ", line).strip()
-        line = line.replace("|", "")
-        return line
+        return line.replace("|", "")
 
     def _normalize_token(self, value: str) -> str:
         value = unicodedata.normalize("NFKD", value)
         value = "".join(ch for ch in value if not unicodedata.combining(ch))
         value = re.sub(r"[^A-Z\s]", "", value.upper())
-        value = re.sub(r"\s+", " ", value).strip()
-        return value
+        return re.sub(r"\s+", " ", value).strip()
 
     def _save_column_text(self, image_name: str, column_index: int, lines: list[str]) -> None:
         out = self.columns_dir / f"{Path(image_name).stem}_col{column_index}.txt"
