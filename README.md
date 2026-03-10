@@ -145,12 +145,16 @@ Y un resumen de lote:
 ### Limpiezas permitidas
 - eliminar espacios dobles,
 - quitar espacios incorrectos antes de `, . : ;`,
-- normalizar espacios alrededor de `, . : ;`,
-- corregir duplicación consecutiva de palabra idéntica (ej. `Dios Dios`),
-- limpiar ruido OCR aislado muy evidente (`|`, `~`, `¬`, `` ` `` cuando aparecen como token aislado),
-- aplicar **lista blanca explícita** de correcciones puntuales (`colócas las -> colócalas`).
+- asegurar un único espacio después de `, . : ;` cuando corresponda,
+- corregir duplicación consecutiva de palabra idéntica con comparación literal (case-sensitive),
+- limpiar solo caracteres basura aislados OCR (`|`, `~`, `` ` ``) cuando aparecen como token suelto.
 
 ### Restricciones (no se hace)
+- no reemplazar letras,
+- no sustituir palabras,
+- no corregir ortografía,
+- no modificar acentos,
+- no unir ni dividir palabras,
 - no modernizar ortografía,
 - no reescribir frases,
 - no completar palabras por inferencia,
