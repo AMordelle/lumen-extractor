@@ -115,3 +115,49 @@ El script crea automáticamente:
 ## Nota
 
 Este extractor es **experimental** para validación de calidad/costo y **no** escribe en SQLite.
+
+
+## Postprocesado conservador (nueva etapa)
+
+Esta iteración añade una etapa separada para limpiar **solo errores mecánicos evidentes** sobre archivos ya generados en `output/verses_json/`.
+
+Ejecutar:
+
+```bash
+python conservative_postprocess.py
+```
+
+Entradas por defecto:
+- `output/verses_json/AI156_0018.verses.json`
+- `output/verses_json/AI156_0020.verses.json`
+- `output/verses_json/AI156_0074.verses.json`
+- `output/verses_json/AI156_0257.verses.json`
+
+Salidas en `output/cleaned/` por imagen:
+- `<imagen>.verses_raw.json` (copia del verso original)
+- `<imagen>.verses_clean.json` (versos con limpieza conservadora)
+- `<imagen>.cleaning_report.json` (solo versos que cambiaron)
+- `<imagen>.warnings.json` (alertas estructurales, sin autocorrección)
+
+Y un resumen de lote:
+- `output/cleaned/cleaning_report.json`
+
+### Limpiezas permitidas
+- eliminar espacios dobles,
+- quitar espacios incorrectos antes de `, . : ;`,
+- normalizar espacios alrededor de `, . : ;`,
+- corregir duplicación consecutiva de palabra idéntica (ej. `Dios Dios`),
+- limpiar ruido OCR aislado muy evidente (`|`, `~`, `¬`, `` ` `` cuando aparecen como token aislado),
+- aplicar **lista blanca explícita** de correcciones puntuales (`colócas las -> colócalas`).
+
+### Restricciones (no se hace)
+- no modernizar ortografía,
+- no reescribir frases,
+- no completar palabras por inferencia,
+- no cambiar estilo,
+- no corregir semántica dudosa.
+
+### Validaciones estructurales (solo advertencias)
+- versículos duplicados dentro de una página,
+- saltos de numeración sospechosos,
+- versículos anormalmente largos.
