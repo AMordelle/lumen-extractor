@@ -165,3 +165,37 @@ Y un resumen de lote:
 - versículos duplicados dentro de una página,
 - saltos de numeración sospechosos,
 - versículos anormalmente largos.
+
+
+## Fase 2: Verificación contra imagen (nueva)
+
+Se añadió una fase de verificación documental que **no re-extrae desde cero**. Toma la imagen original y el `verses_clean.json` existente para confirmar/corregir de forma conservadora.
+
+Ejecutar:
+
+```bash
+python verification_phase2.py
+```
+
+Entradas por defecto por imagen:
+- `AI156_images/<imagen>.jpg`
+- `output/cleaned/<imagen>.verses_clean.json`
+
+Salidas en `output/verified/`:
+- `<imagen>.verses_verified.json`
+- `<imagen>.verification_report.json`
+- `verification_costs_summary.json` (tokens/costo por imagen y total lote)
+- `logs/` (respuestas crudas y texto de respuesta)
+
+Estados permitidos por versículo:
+- `verificado`
+- `corregido`
+- `dudoso`
+
+Reglas de prompting de verificación:
+- verificar transcripción existente contra imagen,
+- no rehacer extracción ciega,
+- conservar ortografía histórica y estilo,
+- corregir solo discrepancias evidentes,
+- marcar `dudoso` cuando no haya certeza,
+- devolver JSON válido (con reintento JSON-only si falla parseo).
