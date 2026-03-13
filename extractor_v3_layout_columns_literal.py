@@ -2,11 +2,10 @@
 """Extractor v3: layout-first literal transcription for Biblia Torres Amat scans.
 
 Pipeline:
-1) Layout detection on full page.
-2) Crop biblical columns using detected bboxes.
-3) Literal transcription per cropped column.
-4) Merge verses in reading order.
-5) Persist structured outputs and cost logs.
+1) Deterministic column cropping from fixed geometry.
+2) Literal transcription per cropped column.
+3) Merge verses in reading order.
+4) Persist structured outputs and cost logs.
 """
 
 from __future__ import annotations
@@ -151,42 +150,6 @@ def _json_request(
     )
 
 
-def validate_layout_json(layout: Dict[str, Any]) -> Dict[str, Any]:
-    required = [
-        "imagen_origen",
-        "libro",
-        "capitulo",
-        "tipo_pagina",
-        "pagina_mixta",
-        "columnas_biblicas",
-        "tiene_notas_al_pie",
-        "tiene_ornamento_central",
-        "bbox_columna_izquierda",
-        "bbox_columna_derecha",
-        "bbox_notas",
-        "bbox_titulo_libro",
-        "bbox_titulo_capitulo",
-    ]
-    for key in required:
-        if key not in layout:
-            raise ValueError(f"Missing layout key: {key}")
-
-    for bbox_key in [
-        "bbox_columna_izquierda",
-        "bbox_columna_derecha",
-        "bbox_notas",
-        "bbox_titulo_libro",
-        "bbox_titulo_capitulo",
-    ]:
-        bbox = layout.get(bbox_key)
-        if bbox is None:
-            continue
-        if not isinstance(bbox, list) or len(bbox) != 4:
-            raise ValueError(f"Invalid bbox format for {bbox_key}: {bbox}")
-
-    return layout
-
-
 def normalize_verse_number(value: Any) -> Optional[int]:
     if isinstance(value, int):
         return value
@@ -262,136 +225,70 @@ def validate_column_json(items: Any, column_name: str, image_name: str) -> List[
     return normalized
 
 
-def bbox_to_crop_box(bbox: List[int], width: int, height: int) -> Tuple[int, int, int, int]:
-    x, y, w, h = [int(v) for v in bbox]
-    left = max(0, x)
-    top = max(0, y)
-    right = min(width, x + w)
-    bottom = min(height, y + h)
-    if right <= left or bottom <= top:
-        raise ValueError(f"Invalid crop box derived from bbox: {bbox}")
-    return left, top, right, bottom
-
-
-def step1_layout_detect(
-    api_key: str,
-    image_path: Path,
-    raw_dir: Path,
-) -> Tuple[Dict[str, Any], Usage]:
-    image_data_uri = encode_image_to_data_uri(image_path)
-
-    instruction = (
-        "Analiza SOLAMENTE la estructura visual de esta página escaneada de Biblia Torres Amat. "
-        "No transcribas el texto completo. "
-        "Identifica regiones: título de libro, título de capítulo, sumario de capítulo, "
-        "zona principal de lectura bíblica, columna bíblica izquierda, columna bíblica derecha (si existe), "
-        "notas al pie, ornamento central decorativo, tipo de página y si es mixta. "
-        "Prioriza detectar el área principal de lectura bíblica. "
-        "Devuelve JSON estricto con este esquema y sin texto adicional: "
-        "{"
-        "\"imagen_origen\":str,"
-        "\"libro\":str,"
-        "\"capitulo\":int|null,"
-        "\"tipo_pagina\":str,"
-        "\"pagina_mixta\":bool,"
-        "\"columnas_biblicas\":int,"
-        "\"tiene_notas_al_pie\":bool,"
-        "\"tiene_ornamento_central\":bool,"
-        "\"bbox_columna_izquierda\":[x,y,w,h]|null,"
-        "\"bbox_columna_derecha\":[x,y,w,h]|null,"
-        "\"bbox_notas\":[x,y,w,h]|null,"
-        "\"bbox_titulo_libro\":[x,y,w,h]|null,"
-        "\"bbox_titulo_capitulo\":[x,y,w,h]|null"
-        "}"
-    )
-
-    payload = {
-        "model": MODEL,
-        "temperature": TEMPERATURE,
-        "top_p": TOP_P,
-        "input": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": instruction},
-                    {
-                        "type": "input_image",
-                        "image_url": image_data_uri,
-                        "detail": "high",
-                    },
-                ],
-            }
-        ],
-    }
-
-    retry_instruction = instruction + " Responde SOLO JSON válido, sin markdown, sin comentarios, sin prefijos."
-    retry_payload = {
-        **payload,
-        "input": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": retry_instruction},
-                    {
-                        "type": "input_image",
-                        "image_url": image_data_uri,
-                        "detail": "high",
-                    },
-                ],
-            }
-        ],
-    }
-
-    raw_path = raw_dir / f"{image_path.stem}.layout.json"
-    parsed, usage = _json_request(api_key, payload, raw_path, retry_payload=retry_payload)
-    return validate_layout_json(parsed), usage
-
-
 def step2_crop_columns(
     image_path: Path,
-    layout: Dict[str, Any],
     crops_dir: Path,
     annotated_dir: Path,
-) -> Dict[str, Optional[Path]]:
+) -> Tuple[Dict[str, Optional[Path]], Dict[str, Any]]:
     with Image.open(image_path) as img:
         width, height = img.size
         draw = ImageDraw.Draw(img)
 
-        output: Dict[str, Optional[Path]] = {"left": None, "right": None}
+        left_crop_box = (
+            int(width * 0.07),
+            int(height * 0.05),
+            int(width * 0.47),
+            int(height * 0.92),
+        )
+        right_crop_box = (
+            int(width * 0.53),
+            int(height * 0.05),
+            int(width * 0.93),
+            int(height * 0.92),
+        )
 
-        left_bbox = layout.get("bbox_columna_izquierda")
-        if left_bbox:
-            left_crop_box = bbox_to_crop_box(left_bbox, width, height)
-            left_crop = img.crop(left_crop_box)
-            left_path = crops_dir / f"{image_path.stem}.left.jpg"
-            left_crop.save(left_path, "JPEG", quality=95)
-            output["left"] = left_path
-            draw.rectangle(left_crop_box, outline="red", width=4)
+        left_crop = img.crop(left_crop_box)
+        left_path = crops_dir / f"{image_path.stem}.left.jpg"
+        left_crop.save(left_path, "JPEG", quality=95)
 
-        right_bbox = layout.get("bbox_columna_derecha")
-        if right_bbox:
-            right_crop_box = bbox_to_crop_box(right_bbox, width, height)
-            right_crop = img.crop(right_crop_box)
-            right_path = crops_dir / f"{image_path.stem}.right.jpg"
-            right_crop.save(right_path, "JPEG", quality=95)
-            output["right"] = right_path
-            draw.rectangle(right_crop_box, outline="blue", width=4)
+        right_crop = img.crop(right_crop_box)
+        right_path = crops_dir / f"{image_path.stem}.right.jpg"
+        right_crop.save(right_path, "JPEG", quality=95)
 
-        extras = [
-            (layout.get("bbox_notas"), "yellow"),
-            (layout.get("bbox_titulo_libro"), "green"),
-            (layout.get("bbox_titulo_capitulo"), "purple"),
-        ]
-        for bbox, color in extras:
-            if bbox:
-                draw.rectangle(bbox_to_crop_box(bbox, width, height), outline=color, width=3)
+        draw.rectangle(left_crop_box, outline="red", width=4)
+        draw.rectangle(right_crop_box, outline="blue", width=4)
 
         annotated_path = annotated_dir / f"{image_path.stem}.annotated.jpg"
         img.save(annotated_path, "JPEG", quality=95)
 
-    return output
+    layout = {
+        "imagen_origen": image_path.name,
+        "libro": None,
+        "capitulo": None,
+        "tipo_pagina": "desconocido",
+        "pagina_mixta": None,
+        "columnas_biblicas": 2,
+        "tiene_notas_al_pie": None,
+        "tiene_ornamento_central": None,
+        "bbox_columna_izquierda": [
+            left_crop_box[0],
+            left_crop_box[1],
+            left_crop_box[2] - left_crop_box[0],
+            left_crop_box[3] - left_crop_box[1],
+        ],
+        "bbox_columna_derecha": [
+            right_crop_box[0],
+            right_crop_box[1],
+            right_crop_box[2] - right_crop_box[0],
+            right_crop_box[3] - right_crop_box[1],
+        ],
+        "bbox_notas": None,
+        "bbox_titulo_libro": None,
+        "bbox_titulo_capitulo": None,
+    }
 
-
+    output: Dict[str, Optional[Path]] = {"left": left_path, "right": right_path}
+    return output, layout
 def step3_transcribe_column(
     api_key: str,
     crop_path: Path,
@@ -510,11 +407,7 @@ def process_page(
 
     usage_total = Usage()
 
-    layout, usage = step1_layout_detect(api_key, image_path, raw_dir)
-    usage_total.input_tokens += usage.input_tokens
-    usage_total.output_tokens += usage.output_tokens
-
-    crops = step2_crop_columns(image_path, layout, crops_dir, annotated_dir)
+    crops, layout = step2_crop_columns(image_path, crops_dir, annotated_dir)
 
     left_verses: List[Dict[str, Any]] = []
     right_verses: List[Dict[str, Any]] = []
