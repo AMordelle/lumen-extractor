@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Extractor experimental vision-first para páginas bíblicas escaneadas."""
+"""Extractor vision-first v2 para transcripción literal de versículos (Torres Amat)."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import re
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -29,301 +29,249 @@ BOOK_HINTS = {
 
 
 @dataclass
-class Region:
+class Zone:
     label: str
     bbox: Tuple[int, int, int, int]
-    score: float
 
 
-@dataclass
-class PageResult:
-    imagen_origen: str
-    libro: Optional[str]
-    capitulo: Optional[int]
-    tipo_pagina: str
-    columnas_biblicas: int
-    zonas_detectadas: Dict[str, bool]
-    versiculos_visibles: List[int]
+def _clean_token(token: str) -> str:
+    return token.strip().replace("\n", " ")
 
 
-class VisionFirstExtractor:
-    def __init__(self, debug: bool = True) -> None:
-        self.debug = debug
+class VisionFirstExtractorV2:
+    """Analiza layout visual primero y transcribe versículos en orden de columnas."""
 
-    def run_on_images(self, image_paths: Sequence[Path], output_dir: Path) -> None:
+    def __init__(self, tesseract_lang: str = "spa") -> None:
+        self.tesseract_lang = tesseract_lang
+
+    def run(self, image_paths: Sequence[Path], output_dir: Path) -> None:
         output_dir.mkdir(parents=True, exist_ok=True)
-        pages_out = output_dir / "pages_json"
-        verses_out = output_dir / "verses_json"
-        ann_out = output_dir / "annotated"
-        crops_out = output_dir / "crops"
-        for folder in (pages_out, verses_out, ann_out, crops_out):
+        debug_ann = output_dir / "annotated"
+        debug_crops = output_dir / "crops"
+        pages_json = output_dir / "pages_json"
+        verses_json = output_dir / "verses_json"
+        for folder in (debug_ann, debug_crops, pages_json, verses_json):
             folder.mkdir(parents=True, exist_ok=True)
 
         for image_path in image_paths:
-            page = self.process_page(image_path, ann_out, crops_out)
-            (pages_out / f"{image_path.stem}.page.json").write_text(
-                json.dumps(asdict(page["page"]), ensure_ascii=False, indent=2),
-                encoding="utf-8",
+            image = cv2.imread(str(image_path))
+            if image is None:
+                raise FileNotFoundError(f"No se pudo abrir {image_path}")
+
+            zones = self.detect_zones(image)
+            book, chapter = self.infer_book_and_chapter(image, zones)
+            verses = self.transcribe_verses(image, zones, image_path.name, book, chapter)
+
+            page_payload = {
+                "imagen_origen": image_path.name,
+                "libro": book,
+                "capitulo": chapter,
+                "zonas": {z.label: True for z in zones},
+                "columnas_biblicas": len([z for z in zones if z.label == "cuerpo_biblico"]),
+                "versiculos_detectados": [v["versiculo"] for v in verses if v.get("versiculo") is not None],
+            }
+
+            (pages_json / f"{image_path.stem}.page.json").write_text(
+                json.dumps(page_payload, ensure_ascii=False, indent=2), encoding="utf-8"
             )
-            (verses_out / f"{image_path.stem}.verses.json").write_text(
-                json.dumps(page["verses"], ensure_ascii=False, indent=2),
-                encoding="utf-8",
+            (verses_json / f"{image_path.stem}.verses.json").write_text(
+                json.dumps(verses, ensure_ascii=False, indent=2), encoding="utf-8"
             )
 
-    def process_page(self, image_path: Path, ann_out: Path, crops_out: Path) -> Dict[str, object]:
-        image = cv2.imread(str(image_path))
-        if image is None:
-            raise FileNotFoundError(f"No se pudo abrir la imagen: {image_path}")
+            self.save_debug(image, zones, image_path.stem, debug_ann, debug_crops)
+
+    def detect_zones(self, image: np.ndarray) -> List[Zone]:
         h, w = image.shape[:2]
+        zones: List[Zone] = []
 
-        layout = self.detect_layout_regions(image)
-        text_by_zone = {r.label: self.ocr_region(image, r.bbox) for r in layout}
+        # Estructura macro visual: parte superior (títulos), cuerpo en 2 columnas, pie.
+        top_h = int(h * 0.17)
+        foot_h = int(h * 0.16)
+        body_top = top_h
+        body_bottom = h - foot_h
 
-        libro = self.infer_book(text_by_zone)
-        capitulo = self.infer_chapter(text_by_zone)
-        columnas = self.infer_columns(image)
-        verses = self.extract_verses(image, layout, libro, capitulo, image_path.name)
-        zone_flags = {
-            "titulo_libro": any(r.label == "titulo_libro" for r in layout),
-            "titulo_capitulo": any(r.label == "titulo_capitulo" for r in layout),
-            "resumen_capitulo": any(r.label == "resumen_capitulo" for r in layout),
-            "cuerpo_biblico": any(r.label == "cuerpo_biblico" for r in layout),
-            "notas_al_pie": any(r.label == "notas_al_pie" for r in layout),
-            "ornamento_central": any(r.label == "ornamento_central" for r in layout),
-        }
+        top_zone = Zone("encabezado", (0, 0, w, top_h))
+        foot_zone = Zone("notas_al_pie", (0, body_bottom, w, foot_h))
+        zones.extend([top_zone, foot_zone])
 
-        if zone_flags["titulo_libro"] and zone_flags["cuerpo_biblico"]:
-            tipo_pagina = "inicio_libro_con_texto_biblico"
-        elif zone_flags["cuerpo_biblico"]:
-            tipo_pagina = "texto_biblico"
-        else:
-            tipo_pagina = "mixta_editorial"
+        # Detección de canal central (gutter + ornamento) via proyección vertical.
+        gray = cv2.cvtColor(image[body_top:body_bottom, :], cv2.COLOR_BGR2GRAY)
+        thr = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+        proj = np.sum(thr > 0, axis=0).astype(np.float32)
+        proj = cv2.GaussianBlur(proj, (0, 0), sigmaX=9)
 
-        page_json = PageResult(
-            imagen_origen=image_path.name,
-            libro=libro,
-            capitulo=capitulo,
-            tipo_pagina=tipo_pagina,
-            columnas_biblicas=columnas,
-            zonas_detectadas=zone_flags,
-            versiculos_visibles=sorted({v["versiculo"] for v in verses if v.get("versiculo") is not None}),
-        )
+        center_min = int(w * 0.35)
+        center_max = int(w * 0.65)
+        valley = int(np.argmin(proj[center_min:center_max]) + center_min)
+        gutter_w = max(int(w * 0.06), 30)
 
-        self.save_debug(image, image_path.stem, layout, ann_out, crops_out)
+        left_x0, left_x1 = 0, max(valley - gutter_w // 2, int(w * 0.42))
+        right_x0, right_x1 = min(valley + gutter_w // 2, int(w * 0.58)), w
 
-        return {"page": page_json, "verses": verses}
+        zones.append(Zone("cuerpo_biblico", (left_x0, body_top, left_x1 - left_x0, body_bottom - body_top)))
+        zones.append(Zone("cuerpo_biblico", (right_x0, body_top, right_x1 - right_x0, body_bottom - body_top)))
 
-    def detect_layout_regions(self, image: np.ndarray) -> List[Region]:
-        h, w = image.shape[:2]
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        thr = cv2.adaptiveThreshold(
-            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 41, 15
-        )
+        orn_h = int((body_bottom - body_top) * 0.10)
+        orn_y = body_top + int((body_bottom - body_top) * 0.50)
+        zones.append(Zone("ornamento_central", (max(0, valley - gutter_w), orn_y, gutter_w * 2, orn_h)))
 
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (19, 11))
-        merged = cv2.morphologyEx(thr, cv2.MORPH_CLOSE, kernel, iterations=1)
-        contours, _ = cv2.findContours(merged, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        return zones
 
-        blocks: List[Tuple[int, int, int, int]] = []
-        for cnt in contours:
-            x, y, bw, bh = cv2.boundingRect(cnt)
-            area = bw * bh
-            if area < (w * h) * 0.005:
-                continue
-            if bh < 30 or bw < 60:
-                continue
-            blocks.append((x, y, bw, bh))
+    def infer_book_and_chapter(self, image: np.ndarray, zones: List[Zone]) -> Tuple[Optional[str], Optional[int]]:
+        header = next((z for z in zones if z.label == "encabezado"), None)
+        if header is None:
+            return None, None
+        text = self.ocr_bbox(image, header.bbox, psm=6).upper()
 
-        blocks.sort(key=lambda b: b[1])
-        regions: List[Region] = []
-
-        for x, y, bw, bh in blocks:
-            text = self.ocr_region(image, (x, y, bw, bh), psm=6)
-            uc = text.upper()
-            label = "cuerpo_biblico"
-            score = 0.5
-
-            if y > int(h * 0.82):
-                label, score = "notas_al_pie", 0.9
-            elif y < int(h * 0.20) and bw > int(w * 0.45):
-                if any(k in uc for k in BOOK_HINTS):
-                    label, score = "titulo_libro", 0.95
-                elif "CAPITULO" in uc or "CAPÍTULO" in uc:
-                    label, score = "titulo_capitulo", 0.95
-                else:
-                    label, score = "resumen_capitulo", 0.65
-            elif int(h * 0.20) <= y <= int(h * 0.55) and bw > int(w * 0.6) and len(text.split()) > 20:
-                label, score = "resumen_capitulo", 0.7
-            elif self.looks_ornament(image, (x, y, bw, bh)):
-                label, score = "ornamento_central", 0.85
-
-            regions.append(Region(label=label, bbox=(x, y, bw, bh), score=score))
-
-        if not any(r.label == "ornamento_central" for r in regions):
-            cx, cy = int(w * 0.5), int(h * 0.58)
-            ow, oh = int(w * 0.10), int(h * 0.08)
-            regions.append(Region("ornamento_central", (cx - ow // 2, cy - oh // 2, ow, oh), 0.35))
-
-        return self.deduplicate_regions(regions)
-
-    def deduplicate_regions(self, regions: List[Region]) -> List[Region]:
-        best: Dict[str, Region] = {}
-        for r in regions:
-            prior = best.get(r.label)
-            if prior is None or (r.score > prior.score and r.bbox[2] * r.bbox[3] > prior.bbox[2] * prior.bbox[3] * 0.5):
-                best[r.label] = r
-            elif r.label == "cuerpo_biblico" and prior and prior.label == "cuerpo_biblico":
-                # conservar múltiples cuerpos bíblicos (columnas)
-                pass
-        bodies = [r for r in regions if r.label == "cuerpo_biblico"]
-        others = [v for k, v in best.items() if k != "cuerpo_biblico"]
-        return others + bodies
-
-    def looks_ornament(self, image: np.ndarray, bbox: Tuple[int, int, int, int]) -> bool:
-        x, y, bw, bh = bbox
-        crop = image[y : y + bh, x : x + bw]
-        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-        edges = cv2.Canny(gray, 40, 120)
-        edge_ratio = float(np.count_nonzero(edges)) / float(edges.size)
-        txt = self.ocr_region(image, bbox, psm=10)
-        return edge_ratio > 0.12 and len(txt.strip()) < 5 and 0.4 < (bw / max(1, bh)) < 2.5
-
-    def infer_book(self, text_by_zone: Dict[str, str]) -> Optional[str]:
-        text = " ".join(text_by_zone.values()).upper()
-        for hint, normalized in BOOK_HINTS.items():
+        book: Optional[str] = None
+        for hint, canonical in BOOK_HINTS.items():
             if hint in text:
-                return normalized
-        return None
+                book = canonical
+                break
 
-    def infer_chapter(self, text_by_zone: Dict[str, str]) -> Optional[int]:
-        text = " ".join(text_by_zone.values()).upper()
-        m = re.search(r"CAP[ÍI]TULO\s+([0-9]{1,3})", text)
+        chapter: Optional[int] = None
+        m = re.search(r"CAP[ÍI]TULO\s*([0-9]{1,3})", text)
         if m:
-            return int(m.group(1))
-        isolated = re.findall(r"\b([0-9]{1,3})\b", text)
-        if isolated:
-            return int(isolated[0])
-        return None
+            chapter = int(m.group(1))
 
-    def infer_columns(self, image: np.ndarray) -> int:
-        h, w = image.shape[:2]
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        body = gray[int(h * 0.20) : int(h * 0.82), :]
-        thr = cv2.threshold(body, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
-        projection = np.sum(thr > 0, axis=0)
-        projection = cv2.GaussianBlur(projection.astype(np.float32), (0, 0), sigmaX=7)
-        midpoint = w // 2
-        valley = np.argmin(projection[int(w * 0.35) : int(w * 0.65)]) + int(w * 0.35)
-        if projection[valley] < np.percentile(projection, 20) and abs(valley - midpoint) < int(w * 0.12):
-            return 2
-        return 1
+        return book, chapter
 
-    def extract_verses(
+    def transcribe_verses(
         self,
         image: np.ndarray,
-        layout: List[Region],
-        libro: Optional[str],
-        capitulo: Optional[int],
-        imagen: str,
+        zones: List[Zone],
+        image_name: str,
+        book: Optional[str],
+        chapter: Optional[int],
     ) -> List[Dict[str, object]]:
-        bodies = [r for r in layout if r.label == "cuerpo_biblico"]
-        if not bodies:
-            return []
+        body_zones = [z for z in zones if z.label == "cuerpo_biblico"]
+        body_zones.sort(key=lambda z: z.bbox[0])  # izquierda -> derecha
+
+        raw_verses: List[Dict[str, object]] = []
+        for zone in body_zones:
+            raw_verses.extend(self.transcribe_zone(image, zone, image_name, book, chapter))
+
+        # Deduplicación y orden numérico estable según aparición.
+        ordered: List[Dict[str, object]] = []
+        seen = set()
+        for item in raw_verses:
+            number = item.get("versiculo")
+            key = (number, item.get("texto"))
+            if number is None or key in seen:
+                continue
+            seen.add(key)
+            ordered.append(item)
+
+        ordered.sort(key=lambda x: x["versiculo"])
+        return ordered
+
+    def transcribe_zone(
+        self,
+        image: np.ndarray,
+        zone: Zone,
+        image_name: str,
+        book: Optional[str],
+        chapter: Optional[int],
+    ) -> List[Dict[str, object]]:
+        x, y, w, h = zone.bbox
+        crop = image[y : y + h, x : x + w]
+        data = pytesseract.image_to_data(
+            crop,
+            lang=self.tesseract_lang,
+            config="--oem 3 --psm 6",
+            output_type=pytesseract.Output.DICT,
+        )
+
+        lines: Dict[Tuple[int, int, int], List[str]] = {}
+        for i in range(len(data["text"])):
+            token = _clean_token(data["text"][i])
+            if not token:
+                continue
+            try:
+                conf = float(data["conf"][i])
+            except ValueError:
+                conf = -1
+            if conf < 30:
+                continue
+            key = (int(data["block_num"][i]), int(data["par_num"][i]), int(data["line_num"][i]))
+            lines.setdefault(key, []).append(token)
+
+        ordered_lines = [" ".join(lines[k]).strip() for k in sorted(lines.keys()) if lines[k]]
 
         verses: List[Dict[str, object]] = []
-        for region in bodies:
-            x, y, bw, bh = region.bbox
-            crop = image[y : y + bh, x : x + bw]
-            data = pytesseract.image_to_data(crop, output_type=pytesseract.Output.DICT, config="--oem 3 --psm 6")
-            current_verse = None
-            current_text: List[str] = []
-            for token, conf in zip(data["text"], data["conf"]):
-                tok = token.strip()
-                if not tok or int(float(conf)) < 35:
-                    continue
-                if re.fullmatch(r"\d{1,3}", tok):
-                    if current_verse is not None and current_text:
-                        verses.append(
-                            {
-                                "imagen_origen": imagen,
-                                "libro": libro,
-                                "capitulo": capitulo,
-                                "versiculo": current_verse,
-                                "texto": " ".join(current_text).strip(),
-                                "bbox_origen": [x, y, bw, bh],
-                            }
-                        )
-                    current_verse = int(tok)
-                    current_text = []
-                elif current_verse is not None:
-                    current_text.append(tok)
-            if current_verse is not None and current_text:
-                verses.append(
-                    {
-                        "imagen_origen": imagen,
-                        "libro": libro,
-                        "capitulo": capitulo,
-                        "versiculo": current_verse,
-                        "texto": " ".join(current_text).strip(),
-                        "bbox_origen": [x, y, bw, bh],
-                    }
-                )
+        current_number: Optional[int] = None
+        current_parts: List[str] = []
+
+        for line in ordered_lines:
+            # descartar líneas editoriales/no bíblicas frecuentes en cuerpo
+            if re.search(r"\bNOTA\b|\bCAPITULO\b|\bCAPÍTULO\b", line.upper()):
+                continue
+
+            m = re.match(r"^(\d{1,3})\s+(.*)$", line)
+            if m:
+                if current_number is not None and current_parts:
+                    verses.append(
+                        {
+                            "imagen_origen": image_name,
+                            "libro": book,
+                            "capitulo": chapter,
+                            "versiculo": current_number,
+                            "texto": " ".join(current_parts).strip(),
+                        }
+                    )
+                current_number = int(m.group(1))
+                current_parts = [m.group(2).strip()] if m.group(2).strip() else []
+            else:
+                if current_number is not None:
+                    current_parts.append(line)
+
+        if current_number is not None and current_parts:
+            verses.append(
+                {
+                    "imagen_origen": image_name,
+                    "libro": book,
+                    "capitulo": chapter,
+                    "versiculo": current_number,
+                    "texto": " ".join(current_parts).strip(),
+                }
+            )
+
         return verses
 
-    def save_debug(
-        self,
-        image: np.ndarray,
-        stem: str,
-        layout: List[Region],
-        ann_out: Path,
-        crops_out: Path,
-    ) -> None:
-        annotated = image.copy()
+    def save_debug(self, image: np.ndarray, zones: List[Zone], stem: str, ann_dir: Path, crops_dir: Path) -> None:
+        canvas = image.copy()
         colors = {
-            "titulo_libro": (255, 0, 0),
-            "titulo_capitulo": (0, 0, 255),
-            "resumen_capitulo": (0, 128, 255),
+            "encabezado": (255, 0, 0),
             "cuerpo_biblico": (0, 255, 0),
-            "notas_al_pie": (255, 0, 255),
             "ornamento_central": (0, 255, 255),
+            "notas_al_pie": (255, 0, 255),
         }
-        for idx, region in enumerate(layout):
-            x, y, w, h = region.bbox
-            c = colors.get(region.label, (180, 180, 180))
-            cv2.rectangle(annotated, (x, y), (x + w, y + h), c, 3)
-            cv2.putText(
-                annotated,
-                f"{region.label}:{region.score:.2f}",
-                (x, max(30, y - 8)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                c,
-                2,
-                cv2.LINE_AA,
-            )
-            crop = image[y : y + h, x : x + w]
-            cv2.imwrite(str(crops_out / f"{stem}.{idx:02d}.{region.label}.jpg"), crop)
 
-        cv2.imwrite(str(ann_out / f"{stem}.annotated.jpg"), annotated)
+        for i, zone in enumerate(zones):
+            x, y, w, h = zone.bbox
+            color = colors.get(zone.label, (200, 200, 200))
+            cv2.rectangle(canvas, (x, y), (x + w, y + h), color, 2)
+            cv2.putText(canvas, zone.label, (x + 5, max(20, y - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+            cv2.imwrite(str(crops_dir / f"{stem}.{i:02d}.{zone.label}.jpg"), image[y : y + h, x : x + w])
 
-    def ocr_region(self, image: np.ndarray, bbox: Tuple[int, int, int, int], psm: int = 4) -> str:
+        cv2.imwrite(str(ann_dir / f"{stem}.annotated.jpg"), canvas)
+
+    def ocr_bbox(self, image: np.ndarray, bbox: Tuple[int, int, int, int], psm: int) -> str:
         x, y, w, h = bbox
         crop = image[y : y + h, x : x + w]
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-        proc = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
-        config = f"--oem 3 --psm {psm}"
-        return pytesseract.image_to_string(proc, lang="spa", config=config)
+        thr = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+        return pytesseract.image_to_string(thr, lang=self.tesseract_lang, config=f"--oem 3 --psm {psm}")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Extractor vision-first para Biblia Torres Amat")
+    parser = argparse.ArgumentParser(description="Extractor vision-first v2 (transcripción literal)")
     parser.add_argument("--input-dir", type=Path, default=Path("AI156_images"))
-    parser.add_argument("--output-dir", type=Path, default=Path("outputs/vision_first"))
+    parser.add_argument("--output-dir", type=Path, default=Path("outputs/vision_first_v2"))
     parser.add_argument(
         "--images",
         nargs="*",
         default=["AI156_0018.jpg", "AI156_0020.jpg", "AI156_0074.jpg", "AI156_0257.jpg"],
-        help="Lista de imágenes objetivo dentro de --input-dir",
     )
     return parser.parse_args()
 
@@ -333,13 +281,10 @@ def main() -> None:
     image_paths = [args.input_dir / name for name in args.images]
     missing = [str(p) for p in image_paths if not p.exists()]
     if missing:
-        raise FileNotFoundError(
-            "Faltan imágenes requeridas para la corrida vision-first:\n- " + "\n- ".join(missing)
-        )
+        raise FileNotFoundError("Faltan imágenes:\n- " + "\n- ".join(missing))
 
-    extractor = VisionFirstExtractor(debug=True)
-    extractor.run_on_images(image_paths=image_paths, output_dir=args.output_dir)
-    print(f"Proceso completado. Salidas en: {args.output_dir}")
+    VisionFirstExtractorV2().run(image_paths=image_paths, output_dir=args.output_dir)
+    print(f"OK: salida en {args.output_dir}")
 
 
 if __name__ == "__main__":

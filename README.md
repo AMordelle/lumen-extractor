@@ -1,22 +1,19 @@
 # lumen-extractor
 
-Extractor experimental **vision-first** para páginas escaneadas de la Biblia Torres Amat (Tomo 1).
+Extractor **vision-first v2** para transcripción literal de versículos en páginas escaneadas de la Biblia Torres Amat.
 
-## Enfoque
+## Qué cambia en v2
 
-Este extractor prioriza la comprensión visual del documento:
-
-1. Detección de layout por bloques en toda la página.
-2. Clasificación semántica de zonas (`titulo_libro`, `titulo_capitulo`, `resumen_capitulo`, `cuerpo_biblico`, `notas_al_pie`, `ornamento_central`).
-3. Inferencia de metadatos de página (libro, capítulo, tipo de página, columnas).
-4. OCR localizado por región (no OCR plano global).
-5. Extracción de versículos guiada por zonas de `cuerpo_biblico`.
+- El flujo ahora prioriza **layout visual** y **orden de lectura por columnas**.
+- La transcripción es **literal**: no corrige ortografía, no moderniza, no completa texto.
+- Solo extrae el **texto bíblico principal** (ignora notas al pie y ruido editorial).
+- Salida principal: JSON por imagen con objetos por versículo en formato estricto.
 
 ## Requisitos
 
 - Python 3.10+
-- Tesseract OCR instalado en sistema (con idioma `spa`)
-- Dependencias Python:
+- Tesseract OCR instalado con idioma `spa`
+- Dependencias:
 
 ```bash
 pip install -r requirements.txt
@@ -24,32 +21,43 @@ pip install -r requirements.txt
 
 ## Ejecución
 
-Coloca las imágenes dentro de `AI156_images/`:
+Imágenes esperadas en `AI156_images/`:
 
 - `AI156_0018.jpg`
 - `AI156_0020.jpg`
 - `AI156_0074.jpg`
 - `AI156_0257.jpg`
 
-Ejecuta:
+Ejecutar:
 
 ```bash
 python vision_first_extractor.py \
   --input-dir AI156_images \
-  --output-dir outputs/vision_first
+  --output-dir outputs/vision_first_v2
 ```
 
-## Entregables generados
+## Artefactos generados
 
-Dentro de `outputs/vision_first/`:
+- `outputs/vision_first_v2/annotated/*.annotated.jpg`: cajas visuales por zona.
+- `outputs/vision_first_v2/crops/*.jpg`: recortes por zona.
+- `outputs/vision_first_v2/pages_json/*.page.json`: metadatos de layout por página.
+- `outputs/vision_first_v2/verses_json/*.verses.json`: lista JSON de versículos:
 
-- `annotated/*.annotated.jpg`: imagen con cajas y etiquetas por zona.
-- `crops/*.jpg`: recortes por zona detectada.
-- `pages_json/*.page.json`: JSON estructurado por página.
-- `verses_json/*.verses.json`: JSON estructurado por versículo.
+```json
+[
+  {
+    "imagen_origen": "AI156_0018.jpg",
+    "libro": "Génesis",
+    "capitulo": 1,
+    "versiculo": 1,
+    "texto": "En el principio ..."
+  }
+]
+```
 
-## Notas
+## Orden de lectura aplicado
 
-- Este prototipo está orientado a validación del enfoque visual.
-- OCR se usa como etapa secundaria y localizada por zonas.
-- No escribe en SQLite.
+1. Columna izquierda (arriba -> abajo)
+2. Columna derecha (arriba -> abajo)
+
+El sistema concatena líneas continuadas del mismo versículo y mantiene el texto OCR tal como se reconoce.
