@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from PIL import Image, ImageDraw
 MODEL = "gpt-4.1"
 TEMPERATURE = 0
 TOP_P = 1
+LOGGER = logging.getLogger("extractor_v3")
 
 TEST_IMAGES = [
     "AI156_0018.jpg",
@@ -185,21 +187,77 @@ def validate_layout_json(layout: Dict[str, Any]) -> Dict[str, Any]:
     return layout
 
 
-def validate_column_json(items: Any, column_name: str) -> List[Dict[str, Any]]:
+def normalize_verse_number(value: Any) -> Optional[int]:
+    if isinstance(value, int):
+        return value
+    if value is None:
+        return None
+    if isinstance(value, str):
+        candidate = value.strip()
+        if not candidate:
+            return None
+        # Accept clean numeric strings quickly
+        if candidate.isdigit():
+            return int(candidate)
+        # Accept common suffix punctuation / marks like "12.", "12:", "12*", "12,"
+        match = re.match(r"^(\d+)", candidate)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def validate_column_json(items: Any, column_name: str, image_name: str) -> List[Dict[str, Any]]:
     if not isinstance(items, list):
-        raise ValueError(f"Column transcription for {column_name} is not a list")
+        LOGGER.error(
+            "Column transcription is not a list | image=%s column=%s type=%s",
+            image_name,
+            column_name,
+            type(items).__name__,
+        )
+        return []
     normalized: List[Dict[str, Any]] = []
     for item in items:
         if not isinstance(item, dict):
-            raise ValueError(f"Item is not object in {column_name}: {item}")
+            LOGGER.warning(
+                "Skipping non-object transcription item | image=%s column=%s item=%s",
+                image_name,
+                column_name,
+                repr(item),
+            )
+            continue
         if "versiculo" not in item or "texto" not in item:
-            raise ValueError(f"Missing versiculo/texto in {column_name}: {item}")
+            LOGGER.warning(
+                "Skipping item missing versiculo/texto | image=%s column=%s item=%s",
+                image_name,
+                column_name,
+                repr(item),
+            )
+            continue
+
+        verse_number = normalize_verse_number(item.get("versiculo"))
+        if verse_number is None:
+            LOGGER.warning(
+                "Invalid versiculo value skipped | image=%s column=%s versiculo=%s texto=%s",
+                image_name,
+                column_name,
+                repr(item.get("versiculo")),
+                repr(item.get("texto", "")),
+            )
+            continue
+
         normalized.append(
             {
                 "columna": item.get("columna", column_name),
-                "versiculo": int(item["versiculo"]),
+                "versiculo": verse_number,
                 "texto": str(item["texto"]).strip(),
             }
+        )
+
+    if not normalized:
+        LOGGER.error(
+            "No valid verses extracted for column | image=%s column=%s",
+            image_name,
+            column_name,
         )
     return normalized
 
@@ -398,8 +456,21 @@ def step3_transcribe_column(
 
     raw_path = raw_dir / f"{crop_path.stem}.transcription.json"
     parsed, usage = _json_request(api_key, payload, raw_path, retry_payload=retry_payload)
-    normalized = validate_column_json(parsed, column_name)
+    normalized = validate_column_json(parsed, column_name, crop_path.name)
     return normalized, usage
+
+
+def setup_logging(logs_dir: Path) -> None:
+    ensure_dirs([logs_dir])
+    log_path = logs_dir / "extractor_v3_debug.log"
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+        handlers=[
+            logging.FileHandler(log_path, encoding="utf-8"),
+            logging.StreamHandler(),
+        ],
+    )
 
 
 def step4_merge_verses(
@@ -497,6 +568,7 @@ def main() -> None:
 
     input_dir = Path(args.input_dir)
     output_root = Path(args.output_dir)
+    setup_logging(output_root / "logs_v3")
     cost_book = CostBook()
 
     batch: List[Dict[str, Any]] = []
