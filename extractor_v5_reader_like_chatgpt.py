@@ -105,7 +105,7 @@ class V5ReaderLikeChatGPTExtractor:
             except Exception as exc:  # noqa: BLE001
                 failed_pages.append({"imagen_origen": image_name, "error": str(exc)})
 
-        report_pages = self._build_manual_review_report(successful_image_names)
+        report_pages = self._build_manual_review_report(successful_image_names, failed_pages)
         self._write_json(self.logs_dir / "review_report.json", report_pages)
         self._write_markdown_review_report(self.logs_dir / "review_report.md", report_pages)
 
@@ -414,7 +414,11 @@ class V5ReaderLikeChatGPTExtractor:
 
         return candidates
 
-    def _build_manual_review_report(self, image_names: List[str]) -> List[Dict[str, Any]]:
+    def _build_manual_review_report(
+        self,
+        image_names: List[str],
+        failed_pages: List[Dict[str, str]],
+    ) -> List[Dict[str, Any]]:
         report_pages: List[Dict[str, Any]] = []
 
         for image_name in image_names:
@@ -439,7 +443,11 @@ class V5ReaderLikeChatGPTExtractor:
                         continue
                     final_by_verse.setdefault(verse_no, []).append(fv)
 
-            numbering_anomaly = self._detect_numbering_anomaly_verses(raw_verses)
+            candidate_reasons_by_verse = {
+                item["versiculo"]: item.get("razones", [])
+                for item in self._detect_review_candidates(raw_verses)
+                if "versiculo" in item
+            }
             duplicate_numbers = {
                 verse_no
                 for verse_no, entries in raw_by_verse.items()
@@ -459,14 +467,8 @@ class V5ReaderLikeChatGPTExtractor:
                 if any(str(item.get("estado", "")).strip() == "corregido" for item in final_items):
                     motivos.append("corregido")
 
-                if verse_no in numbering_anomaly:
+                if "numeracion_anomala" in candidate_reasons_by_verse.get(verse_no, []):
                     motivos.append("numeracion_anomala")
-
-                if any(self._has_suspicious_symbols(str(item.get("texto", ""))) for item in raw_items + final_items):
-                    motivos.append("simbolos_sospechosos")
-
-                if any(self._appears_truncated(str(item.get("texto", ""))) for item in raw_items + final_items):
-                    motivos.append("texto_truncado")
 
                 if verse_no in duplicate_numbers:
                     motivos.append("versiculo_duplicado")
@@ -496,33 +498,31 @@ class V5ReaderLikeChatGPTExtractor:
                 }
             )
 
+        for failed in failed_pages:
+            image_name = failed.get("imagen_origen", "desconocido")
+            page_id = Path(image_name).stem
+            page_analysis = self._load_json(self.page_analysis_dir / f"{page_id}.json", {})
+            verses_raw_payload = self._load_json(self.verses_raw_dir / f"{page_id}.json", {"versiculos": []})
+            raw_verses = self._normalize_verses(verses_raw_payload.get("versiculos", []))
+
+            report_pages.append(
+                {
+                    "imagen_origen": image_name,
+                    "libro": page_analysis.get("libro"),
+                    "capitulo": page_analysis.get("capitulo"),
+                    "total_versiculos": len(raw_verses),
+                    "versiculos_a_revisar": [
+                        {
+                            "versiculo": None,
+                            "texto_raw": None,
+                            "texto_final": None,
+                            "motivo": ["fallo_parcial_pagina"],
+                        }
+                    ],
+                }
+            )
+
         return report_pages
-
-    @staticmethod
-    def _detect_numbering_anomaly_verses(verses: List[Dict[str, Any]]) -> set[int]:
-        if not verses:
-            return set()
-        anomalies: set[int] = set()
-        expected_next: Optional[int] = None
-        for verse in verses:
-            verse_no = verse["versiculo"]
-            if expected_next is not None and verse_no != expected_next:
-                anomalies.add(verse_no)
-            expected_next = verse_no + 1
-        return anomalies
-
-    @staticmethod
-    def _has_suspicious_symbols(text: str) -> bool:
-        return bool(re.search(r"[\[\]{}<>]|_{2,}|\.{3,}|[�§¶]", text))
-
-    @staticmethod
-    def _appears_truncated(text: str) -> bool:
-        cleaned = text.strip()
-        if not cleaned:
-            return True
-        if len(cleaned) < 12:
-            return True
-        return bool(re.search(r"(?:\.\.\.|…|[-—]|[,;:])$", cleaned))
 
     @staticmethod
     def _load_json(path: Path, fallback: Any) -> Any:
