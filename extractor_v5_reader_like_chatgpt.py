@@ -459,6 +459,11 @@ class V5ReaderLikeChatGPTExtractor:
             for verse_no in all_verse_numbers:
                 raw_items = raw_by_verse.get(verse_no, [])
                 final_items = final_by_verse.get(verse_no, [])
+                texts_to_check = [
+                    str(item.get("texto", "")).strip()
+                    for item in raw_items + final_items
+                    if str(item.get("texto", "")).strip()
+                ]
 
                 motivos: List[str] = []
                 if any(bool(item.get("dudoso", False)) for item in raw_items):
@@ -472,6 +477,11 @@ class V5ReaderLikeChatGPTExtractor:
 
                 if verse_no in duplicate_numbers:
                     motivos.append("versiculo_duplicado")
+
+                objective_motivos: set[str] = set()
+                for text in texts_to_check:
+                    objective_motivos.update(self._detect_objective_text_anomalies(text))
+                motivos.extend(sorted(objective_motivos))
 
                 if not motivos:
                     continue
@@ -523,6 +533,45 @@ class V5ReaderLikeChatGPTExtractor:
             )
 
         return report_pages
+
+    @staticmethod
+    def _detect_objective_text_anomalies(text: str) -> set[str]:
+        motivos: set[str] = set()
+        lower_text = text.lower()
+        compact = re.sub(r"\s+", " ", lower_text).strip()
+
+        # Repeated phrase/fragments inside the same verse (3+ words repeated).
+        repeated_phrase = re.search(
+            r"\b([a-záéíóúñ]+(?:\s+[a-záéíóúñ]+){2,})\b[\s,;:.]+(?:y\s+|e\s+|que\s+|de\s+|la\s+|el\s+)?\1\b",
+            compact,
+        )
+        if repeated_phrase:
+            motivos.add("repeticion_sospechosa")
+
+        # Connector repetition pattern that usually indicates broken reconstruction.
+        if re.search(r"\b(?:y|que|de|la|el)\b(?:\s+\b(?:y|que|de|la|el)\b){3,}", compact):
+            motivos.add("repeticion_sospechosa")
+
+        # Isolated note symbols or verse-like numbers embedded in text.
+        if re.search(r"(?<!\w)\*(?!\w)|\b\d{2,3}\b", text):
+            motivos.add("contaminacion_notas_probable")
+
+        # Repeated short clauses: "que ... , que ...", "y ... ; y ..."
+        if re.search(r"\b(que|y|de)\s+([a-záéíóúñ]{2,}(?:\s+[a-záéíóúñ]{2,}){0,3})\b[,;:]\s*\1\s+\2\b", compact):
+            motivos.add("repeticion_sospechosa")
+
+        # Obvious malformed structure from reconstruction artifacts.
+        malformed_patterns = [
+            r"\(\s*\)",  # empty parentheses
+            r"\[\s*\]",  # empty brackets
+            r"(?:\b\w+\b\s+){0,2}(?:\.{2,}|__+)(?:\s+\b\w+\b){0,2}",  # unresolved gaps
+            r"(?:^|[\s(])(?:\)|\]|\})(?:$|[\s,.;:])",  # unmatched closing token
+            r"(?:^|[\s,.;:])(?:\(|\[|\{)(?:$|[\s,.;:])",  # unmatched opening token
+        ]
+        if any(re.search(pattern, text) for pattern in malformed_patterns):
+            motivos.add("estructura_malformada")
+
+        return motivos
 
     @staticmethod
     def _load_json(path: Path, fallback: Any) -> Any:
