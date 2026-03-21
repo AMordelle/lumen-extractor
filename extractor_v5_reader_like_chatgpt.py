@@ -93,6 +93,7 @@ class V5ReaderLikeChatGPTExtractor:
     def process_batch(self, image_names: List[str]) -> Dict[str, Any]:
         processed_pages = 0
         successful_pages = 0
+        successful_image_names: List[str] = []
         failed_pages: List[Dict[str, str]] = []
 
         for image_name in image_names:
@@ -100,8 +101,13 @@ class V5ReaderLikeChatGPTExtractor:
             try:
                 self.process_single_page(image_name)
                 successful_pages += 1
+                successful_image_names.append(image_name)
             except Exception as exc:  # noqa: BLE001
                 failed_pages.append({"imagen_origen": image_name, "error": str(exc)})
+
+        report_pages = self._build_manual_review_report(successful_image_names)
+        self._write_json(self.logs_dir / "review_report.json", report_pages)
+        self._write_markdown_review_report(self.logs_dir / "review_report.md", report_pages)
 
         summary = {
             "processed_pages": processed_pages,
@@ -407,6 +413,141 @@ class V5ReaderLikeChatGPTExtractor:
                 )
 
         return candidates
+
+    def _build_manual_review_report(self, image_names: List[str]) -> List[Dict[str, Any]]:
+        report_pages: List[Dict[str, Any]] = []
+
+        for image_name in image_names:
+            page_id = Path(image_name).stem
+            page_analysis = self._load_json(self.page_analysis_dir / f"{page_id}.json", {})
+            verses_raw_payload = self._load_json(self.verses_raw_dir / f"{page_id}.json", {"versiculos": []})
+            verses_final = self._load_json(self.verses_final_dir / f"{page_id}.json", [])
+
+            raw_verses = self._normalize_verses(verses_raw_payload.get("versiculos", []))
+            raw_by_verse: Dict[int, List[Dict[str, Any]]] = {}
+            for rv in raw_verses:
+                raw_by_verse.setdefault(rv["versiculo"], []).append(rv)
+
+            final_by_verse: Dict[int, List[Dict[str, Any]]] = {}
+            if isinstance(verses_final, list):
+                for fv in verses_final:
+                    if not isinstance(fv, dict):
+                        continue
+                    try:
+                        verse_no = int(fv.get("versiculo"))
+                    except Exception:  # noqa: BLE001
+                        continue
+                    final_by_verse.setdefault(verse_no, []).append(fv)
+
+            numbering_anomaly = self._detect_numbering_anomaly_verses(raw_verses)
+            duplicate_numbers = {
+                verse_no
+                for verse_no, entries in raw_by_verse.items()
+                if len(entries) > 1
+            }
+
+            all_verse_numbers = sorted(set(raw_by_verse) | set(final_by_verse))
+            flagged_verses: List[Dict[str, Any]] = []
+            for verse_no in all_verse_numbers:
+                raw_items = raw_by_verse.get(verse_no, [])
+                final_items = final_by_verse.get(verse_no, [])
+
+                motivos: List[str] = []
+                if any(bool(item.get("dudoso", False)) for item in raw_items):
+                    motivos.append("dudoso")
+
+                if any(str(item.get("estado", "")).strip() == "corregido" for item in final_items):
+                    motivos.append("corregido")
+
+                if verse_no in numbering_anomaly:
+                    motivos.append("numeracion_anomala")
+
+                if any(self._has_suspicious_symbols(str(item.get("texto", ""))) for item in raw_items + final_items):
+                    motivos.append("simbolos_sospechosos")
+
+                if any(self._appears_truncated(str(item.get("texto", ""))) for item in raw_items + final_items):
+                    motivos.append("texto_truncado")
+
+                if verse_no in duplicate_numbers:
+                    motivos.append("versiculo_duplicado")
+
+                if not motivos:
+                    continue
+
+                flagged_verses.append(
+                    {
+                        "versiculo": verse_no,
+                        "texto_raw": raw_items[0]["texto"] if raw_items else None,
+                        "texto_final": str(final_items[0].get("texto", "")).strip() if final_items else None,
+                        "motivo": motivos,
+                    }
+                )
+
+            if not flagged_verses:
+                continue
+
+            report_pages.append(
+                {
+                    "imagen_origen": image_name,
+                    "libro": page_analysis.get("libro"),
+                    "capitulo": page_analysis.get("capitulo"),
+                    "total_versiculos": len(raw_verses),
+                    "versiculos_a_revisar": flagged_verses,
+                }
+            )
+
+        return report_pages
+
+    @staticmethod
+    def _detect_numbering_anomaly_verses(verses: List[Dict[str, Any]]) -> set[int]:
+        if not verses:
+            return set()
+        anomalies: set[int] = set()
+        expected_next: Optional[int] = None
+        for verse in verses:
+            verse_no = verse["versiculo"]
+            if expected_next is not None and verse_no != expected_next:
+                anomalies.add(verse_no)
+            expected_next = verse_no + 1
+        return anomalies
+
+    @staticmethod
+    def _has_suspicious_symbols(text: str) -> bool:
+        return bool(re.search(r"[\[\]{}<>]|_{2,}|\.{3,}|[�§¶]", text))
+
+    @staticmethod
+    def _appears_truncated(text: str) -> bool:
+        cleaned = text.strip()
+        if not cleaned:
+            return True
+        if len(cleaned) < 12:
+            return True
+        return bool(re.search(r"(?:\.\.\.|…|[-—]|[,;:])$", cleaned))
+
+    @staticmethod
+    def _load_json(path: Path, fallback: Any) -> Any:
+        if not path.exists():
+            return fallback
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+
+    @staticmethod
+    def _write_markdown_review_report(path: Path, report_pages: List[Dict[str, Any]]) -> None:
+        lines = ["# Review report", ""]
+        for page in report_pages:
+            image_name = str(page.get("imagen_origen", "desconocido"))
+            libro = page.get("libro")
+            capitulo = page.get("capitulo")
+            title_right = f"{libro} {capitulo}" if libro is not None and capitulo is not None else "sin referencia"
+            lines.append(f"## {image_name} — {title_right}")
+            for verse in page.get("versiculos_a_revisar", []):
+                motivos = ", ".join(verse.get("motivo", []))
+                lines.append(f"- v{verse.get('versiculo')} — {motivos}")
+            lines.append("")
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as f:
+            f.write("\n".join(lines).rstrip() + "\n")
 
     def _normalize_verses(self, verses: Any) -> List[Dict[str, Any]]:
         norm: List[Dict[str, Any]] = []
