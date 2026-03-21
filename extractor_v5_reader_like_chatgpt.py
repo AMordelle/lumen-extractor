@@ -571,7 +571,72 @@ class V5ReaderLikeChatGPTExtractor:
         if any(re.search(pattern, text) for pattern in malformed_patterns):
             motivos.add("estructura_malformada")
 
+        if V5ReaderLikeChatGPTExtractor._has_low_semantic_coherence(compact):
+            motivos.add("coherencia_baja")
+
         return motivos
+
+    @staticmethod
+    def _has_low_semantic_coherence(compact_text: str) -> bool:
+        if not compact_text:
+            return False
+
+        tokens = re.findall(r"[a-záéíóúñ]+", compact_text)
+        if len(tokens) < 6:
+            return False
+
+        verb_roots = {
+            "es", "son", "era", "eran", "fue", "fueron", "será", "serán",
+            "ha", "han", "había", "habían", "hubo", "hubieron",
+            "dijo", "dijeron", "hizo", "hicieron", "vino", "vinieron",
+            "dio", "dieron", "vio", "vieron", "fué", "está", "están",
+        }
+        verb_suffixes = (
+            "ado", "ido", "aba", "aban", "ada", "adas", "ados",
+            "ía", "ían", "é", "aste", "ó", "aron", "ieron",
+            "emos", "imos", "áis", "éis", "ís", "an", "en",
+        )
+
+        def has_verb(words: List[str]) -> bool:
+            for w in words:
+                if w in verb_roots:
+                    return True
+                if len(w) >= 4 and w.endswith(verb_suffixes):
+                    return True
+            return False
+
+        # Clause-level coherence: substantive clauses without any verbal core are suspicious.
+        clauses = [c.strip() for c in re.split(r"[,:;]", compact_text) if c.strip()]
+        verb_missing_clauses = 0
+        for clause in clauses:
+            clause_words = re.findall(r"[a-záéíóúñ]+", clause)
+            if len(clause_words) >= 4 and not has_verb(clause_words):
+                verb_missing_clauses += 1
+
+        connector_collisions = len(
+            re.findall(
+                r"\b(?:que|de|y|en|a|la|el|los|las|del|al)\s+"
+                r"(?:que|de|y|en|a|la|el|los|las|del|al)\b",
+                compact_text,
+            )
+        )
+
+        unnatural_restarts = len(
+            re.findall(
+                r"[,;:]\s*(?:que|y|de)\s+(?:la|el|los|las|de|que)\b",
+                compact_text,
+            )
+        )
+
+        # Conservative gating:
+        # flag only when multiple structural-semantic signals appear together.
+        if verb_missing_clauses >= 2:
+            return True
+        if verb_missing_clauses >= 1 and connector_collisions >= 2:
+            return True
+        if verb_missing_clauses >= 1 and unnatural_restarts >= 2:
+            return True
+        return False
 
     @staticmethod
     def _load_json(path: Path, fallback: Any) -> Any:
