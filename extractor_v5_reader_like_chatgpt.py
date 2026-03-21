@@ -514,21 +514,97 @@ def parse_args() -> argparse.Namespace:
         default=["AI156_0018.jpg", "AI156_0020.jpg", "AI156_0074.jpg", "AI156_0257.jpg"],
         help="Lista de imágenes a procesar",
     )
+    parser.add_argument(
+        "--pages",
+        default=None,
+        help="Páginas a procesar: números/rangos separados por coma (ej: 18,20,74,100-125)",
+    )
+    parser.add_argument(
+        "--page-file",
+        default=None,
+        help="Ruta a .txt con páginas/rangos (una por línea, también admite comas)",
+    )
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
     return parser.parse_args()
 
 
+def _parse_pages_spec(spec: str) -> List[int]:
+    pages: List[int] = []
+    for raw_part in spec.split(","):
+        part = raw_part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start_s, end_s = part.split("-", 1)
+            start = int(start_s.strip())
+            end = int(end_s.strip())
+            if start <= 0 or end <= 0:
+                raise ValueError(f"Rango inválido (solo enteros positivos): {part}")
+            if start > end:
+                raise ValueError(f"Rango inválido (inicio > fin): {part}")
+            pages.extend(range(start, end + 1))
+        else:
+            page = int(part)
+            if page <= 0:
+                raise ValueError(f"Página inválida (solo enteros positivos): {part}")
+            pages.append(page)
+    return pages
+
+
+def _parse_pages_from_file(path: Path) -> List[int]:
+    pages: List[int] = []
+    with path.open("r", encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            pages.extend(_parse_pages_spec(line))
+    return pages
+
+
+def _pages_to_filenames(pages: List[int]) -> List[str]:
+    ordered_unique_pages = sorted(set(pages))
+    return [f"AI156_{page:04d}.jpg" for page in ordered_unique_pages]
+
+
+def _resolve_images_to_process(args: argparse.Namespace) -> List[str]:
+    if not args.pages and not args.page_file:
+        return args.images
+
+    selected_pages: List[int] = []
+    if args.pages:
+        selected_pages.extend(_parse_pages_spec(args.pages))
+    if args.page_file:
+        selected_pages.extend(_parse_pages_from_file(Path(args.page_file)))
+
+    return _pages_to_filenames(selected_pages)
+
+
 def main() -> None:
     args = parse_args()
+    candidate_images = _resolve_images_to_process(args)
+    input_dir = Path(args.input_dir)
+
+    final_images: List[str] = []
+    for image_name in candidate_images:
+        image_path = input_dir / image_name
+        if image_path.exists():
+            final_images.append(image_name)
+        else:
+            print(f"Advertencia: no existe {image_name} en {input_dir}")
+
+    print("Imágenes a procesar:")
+    for image_name in final_images:
+        print(f"- {image_name}")
 
     extractor = V5ReaderLikeChatGPTExtractor(
-        input_dir=Path(args.input_dir),
+        input_dir=input_dir,
         output_root=Path(args.output_root),
         model=args.model,
         temperature=args.temperature,
     )
-    summary = extractor.process_batch(args.images)
+    summary = extractor.process_batch(final_images)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
