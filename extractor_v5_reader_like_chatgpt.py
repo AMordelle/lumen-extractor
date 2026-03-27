@@ -539,6 +539,10 @@ class V5ReaderLikeChatGPTExtractor:
         motivos: set[str] = set()
         lower_text = text.lower()
         compact = re.sub(r"\s+", " ", lower_text).strip()
+        repeated_fragment_strong = False
+        repeated_clause_breaking = False
+        reconstruction_artifact = False
+        impossible_flow = False
 
         # Repeated phrase/fragments inside the same verse (3+ words repeated).
         repeated_phrase = re.search(
@@ -547,10 +551,12 @@ class V5ReaderLikeChatGPTExtractor:
         )
         if repeated_phrase:
             motivos.add("repeticion_sospechosa")
+            repeated_fragment_strong = True
 
         # Connector repetition pattern that usually indicates broken reconstruction.
         if re.search(r"\b(?:y|que|de|la|el)\b(?:\s+\b(?:y|que|de|la|el)\b){3,}", compact):
             motivos.add("repeticion_sospechosa")
+            repeated_clause_breaking = True
 
         # Isolated note symbols or verse-like numbers embedded in text.
         if re.search(r"(?<!\w)\*(?!\w)|\b\d{2,3}\b", text):
@@ -559,6 +565,21 @@ class V5ReaderLikeChatGPTExtractor:
         # Repeated short clauses: "que ... , que ...", "y ... ; y ..."
         if re.search(r"\b(que|y|de)\s+([a-záéíóúñ]{2,}(?:\s+[a-záéíóúñ]{2,}){0,3})\b[,;:]\s*\1\s+\2\b", compact):
             motivos.add("repeticion_sospechosa")
+            repeated_clause_breaking = True
+
+        # Very strong duplicated fragment (4+ words repeated), conservative by design.
+        if re.search(
+            r"\b([a-záéíóúñ]+(?:\s+[a-záéíóúñ]+){3,})\b(?:[\s,;:.]+(?:y|que|de|la|el)\b)?[\s,;:.]+\1\b",
+            compact,
+        ):
+            repeated_fragment_strong = True
+
+        # Clause pattern repetition that typically breaks meaning.
+        if re.search(
+            r"\b(si\s+[a-záéíóúñ]+(?:\s+[a-záéíóúñ]+){1,6})\b[,;:]\s*\1\b",
+            compact,
+        ):
+            repeated_clause_breaking = True
 
         # Obvious malformed structure from reconstruction artifacts.
         malformed_patterns = [
@@ -570,71 +591,37 @@ class V5ReaderLikeChatGPTExtractor:
         ]
         if any(re.search(pattern, text) for pattern in malformed_patterns):
             motivos.add("estructura_malformada")
+            reconstruction_artifact = True
 
-        if V5ReaderLikeChatGPTExtractor._has_low_semantic_coherence(compact):
+        if V5ReaderLikeChatGPTExtractor._has_low_semantic_coherence(
+            compact_text=compact,
+            repeated_fragment_strong=repeated_fragment_strong,
+            repeated_clause_breaking=repeated_clause_breaking,
+            reconstruction_artifact=reconstruction_artifact,
+            impossible_flow=impossible_flow,
+        ):
             motivos.add("coherencia_baja")
 
         return motivos
 
     @staticmethod
-    def _has_low_semantic_coherence(compact_text: str) -> bool:
+    def _has_low_semantic_coherence(
+        compact_text: str,
+        repeated_fragment_strong: bool,
+        repeated_clause_breaking: bool,
+        reconstruction_artifact: bool,
+        impossible_flow: bool,
+    ) -> bool:
         if not compact_text:
             return False
 
-        tokens = re.findall(r"[a-záéíóúñ]+", compact_text)
-        if len(tokens) < 6:
-            return False
-
-        verb_roots = {
-            "es", "son", "era", "eran", "fue", "fueron", "será", "serán",
-            "ha", "han", "había", "habían", "hubo", "hubieron",
-            "dijo", "dijeron", "hizo", "hicieron", "vino", "vinieron",
-            "dio", "dieron", "vio", "vieron", "fué", "está", "están",
-        }
-        verb_suffixes = (
-            "ado", "ido", "aba", "aban", "ada", "adas", "ados",
-            "ía", "ían", "é", "aste", "ó", "aron", "ieron",
-            "emos", "imos", "áis", "éis", "ís", "an", "en",
-        )
-
-        def has_verb(words: List[str]) -> bool:
-            for w in words:
-                if w in verb_roots:
-                    return True
-                if len(w) >= 4 and w.endswith(verb_suffixes):
-                    return True
-            return False
-
-        # Clause-level coherence: substantive clauses without any verbal core are suspicious.
-        clauses = [c.strip() for c in re.split(r"[,:;]", compact_text) if c.strip()]
-        verb_missing_clauses = 0
-        for clause in clauses:
-            clause_words = re.findall(r"[a-záéíóúñ]+", clause)
-            if len(clause_words) >= 4 and not has_verb(clause_words):
-                verb_missing_clauses += 1
-
-        connector_collisions = len(
-            re.findall(
-                r"\b(?:que|de|y|en|a|la|el|los|las|del|al)\s+"
-                r"(?:que|de|y|en|a|la|el|los|las|del|al)\b",
-                compact_text,
-            )
-        )
-
-        unnatural_restarts = len(
-            re.findall(
-                r"[,;:]\s*(?:que|y|de)\s+(?:la|el|los|las|de|que)\b",
-                compact_text,
-            )
-        )
-
-        # Conservative gating:
-        # flag only when multiple structural-semantic signals appear together.
-        if verb_missing_clauses >= 2:
+        # Strict, rare trigger:
+        # only flag when there is strong evidence of corrupted reconstruction.
+        if repeated_fragment_strong:
             return True
-        if verb_missing_clauses >= 1 and connector_collisions >= 2:
+        if repeated_clause_breaking and reconstruction_artifact:
             return True
-        if verb_missing_clauses >= 1 and unnatural_restarts >= 2:
+        if impossible_flow:
             return True
         return False
 
