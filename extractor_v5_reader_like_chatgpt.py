@@ -93,6 +93,7 @@ class V5ReaderLikeChatGPTExtractor:
     def process_batch(self, image_names: List[str]) -> Dict[str, Any]:
         processed_pages = 0
         successful_pages = 0
+        successful_image_names: List[str] = []
         failed_pages: List[Dict[str, str]] = []
 
         for image_name in image_names:
@@ -100,8 +101,13 @@ class V5ReaderLikeChatGPTExtractor:
             try:
                 self.process_single_page(image_name)
                 successful_pages += 1
+                successful_image_names.append(image_name)
             except Exception as exc:  # noqa: BLE001
                 failed_pages.append({"imagen_origen": image_name, "error": str(exc)})
+
+        report_pages = self._build_manual_review_report(successful_image_names, failed_pages)
+        self._write_json(self.logs_dir / "review_report.json", report_pages)
+        self._write_markdown_review_report(self.logs_dir / "review_report.md", report_pages)
 
         summary = {
             "processed_pages": processed_pages,
@@ -407,6 +413,242 @@ class V5ReaderLikeChatGPTExtractor:
                 )
 
         return candidates
+
+    def _build_manual_review_report(
+        self,
+        image_names: List[str],
+        failed_pages: List[Dict[str, str]],
+    ) -> List[Dict[str, Any]]:
+        report_pages: List[Dict[str, Any]] = []
+
+        for image_name in image_names:
+            page_id = Path(image_name).stem
+            page_analysis = self._load_json(self.page_analysis_dir / f"{page_id}.json", {})
+            verses_raw_payload = self._load_json(self.verses_raw_dir / f"{page_id}.json", {"versiculos": []})
+            verses_final = self._load_json(self.verses_final_dir / f"{page_id}.json", [])
+
+            raw_verses = self._normalize_verses(verses_raw_payload.get("versiculos", []))
+            raw_by_verse: Dict[int, List[Dict[str, Any]]] = {}
+            for rv in raw_verses:
+                raw_by_verse.setdefault(rv["versiculo"], []).append(rv)
+
+            final_by_verse: Dict[int, List[Dict[str, Any]]] = {}
+            if isinstance(verses_final, list):
+                for fv in verses_final:
+                    if not isinstance(fv, dict):
+                        continue
+                    try:
+                        verse_no = int(fv.get("versiculo"))
+                    except Exception:  # noqa: BLE001
+                        continue
+                    final_by_verse.setdefault(verse_no, []).append(fv)
+
+            candidate_reasons_by_verse = {
+                item["versiculo"]: item.get("razones", [])
+                for item in self._detect_review_candidates(raw_verses)
+                if "versiculo" in item
+            }
+            duplicate_numbers = {
+                verse_no
+                for verse_no, entries in raw_by_verse.items()
+                if len(entries) > 1
+            }
+
+            all_verse_numbers = sorted(set(raw_by_verse) | set(final_by_verse))
+            flagged_verses: List[Dict[str, Any]] = []
+            for verse_no in all_verse_numbers:
+                raw_items = raw_by_verse.get(verse_no, [])
+                final_items = final_by_verse.get(verse_no, [])
+                texts_to_check = [
+                    str(item.get("texto", "")).strip()
+                    for item in raw_items + final_items
+                    if str(item.get("texto", "")).strip()
+                ]
+
+                motivos: List[str] = []
+                if any(bool(item.get("dudoso", False)) for item in raw_items):
+                    motivos.append("dudoso")
+
+                if any(str(item.get("estado", "")).strip() == "corregido" for item in final_items):
+                    motivos.append("corregido")
+
+                if "numeracion_anomala" in candidate_reasons_by_verse.get(verse_no, []):
+                    motivos.append("numeracion_anomala")
+
+                if verse_no in duplicate_numbers:
+                    motivos.append("versiculo_duplicado")
+
+                objective_motivos: set[str] = set()
+                for text in texts_to_check:
+                    objective_motivos.update(self._detect_objective_text_anomalies(text))
+                motivos.extend(sorted(objective_motivos))
+
+                if not motivos:
+                    continue
+
+                flagged_verses.append(
+                    {
+                        "versiculo": verse_no,
+                        "texto_raw": raw_items[0]["texto"] if raw_items else None,
+                        "texto_final": str(final_items[0].get("texto", "")).strip() if final_items else None,
+                        "motivo": motivos,
+                    }
+                )
+
+            if not flagged_verses:
+                continue
+
+            report_pages.append(
+                {
+                    "imagen_origen": image_name,
+                    "libro": page_analysis.get("libro"),
+                    "capitulo": page_analysis.get("capitulo"),
+                    "total_versiculos": len(raw_verses),
+                    "versiculos_a_revisar": flagged_verses,
+                }
+            )
+
+        for failed in failed_pages:
+            image_name = failed.get("imagen_origen", "desconocido")
+            page_id = Path(image_name).stem
+            page_analysis = self._load_json(self.page_analysis_dir / f"{page_id}.json", {})
+            verses_raw_payload = self._load_json(self.verses_raw_dir / f"{page_id}.json", {"versiculos": []})
+            raw_verses = self._normalize_verses(verses_raw_payload.get("versiculos", []))
+
+            report_pages.append(
+                {
+                    "imagen_origen": image_name,
+                    "libro": page_analysis.get("libro"),
+                    "capitulo": page_analysis.get("capitulo"),
+                    "total_versiculos": len(raw_verses),
+                    "versiculos_a_revisar": [
+                        {
+                            "versiculo": None,
+                            "texto_raw": None,
+                            "texto_final": None,
+                            "motivo": ["fallo_parcial_pagina"],
+                        }
+                    ],
+                }
+            )
+
+        return report_pages
+
+    @staticmethod
+    def _detect_objective_text_anomalies(text: str) -> set[str]:
+        motivos: set[str] = set()
+        lower_text = text.lower()
+        compact = re.sub(r"\s+", " ", lower_text).strip()
+        repeated_fragment_strong = False
+        repeated_clause_breaking = False
+        reconstruction_artifact = False
+        impossible_flow = False
+
+        # Repeated phrase/fragments inside the same verse (3+ words repeated).
+        repeated_phrase = re.search(
+            r"\b([a-záéíóúñ]+(?:\s+[a-záéíóúñ]+){2,})\b[\s,;:.]+(?:y\s+|e\s+|que\s+|de\s+|la\s+|el\s+)?\1\b",
+            compact,
+        )
+        if repeated_phrase:
+            motivos.add("repeticion_sospechosa")
+            repeated_fragment_strong = True
+
+        # Connector repetition pattern that usually indicates broken reconstruction.
+        if re.search(r"\b(?:y|que|de|la|el)\b(?:\s+\b(?:y|que|de|la|el)\b){3,}", compact):
+            motivos.add("repeticion_sospechosa")
+            repeated_clause_breaking = True
+
+        # Isolated note symbols or verse-like numbers embedded in text.
+        if re.search(r"(?<!\w)\*(?!\w)|\b\d{2,3}\b", text):
+            motivos.add("contaminacion_notas_probable")
+
+        # Repeated short clauses: "que ... , que ...", "y ... ; y ..."
+        if re.search(r"\b(que|y|de)\s+([a-záéíóúñ]{2,}(?:\s+[a-záéíóúñ]{2,}){0,3})\b[,;:]\s*\1\s+\2\b", compact):
+            motivos.add("repeticion_sospechosa")
+            repeated_clause_breaking = True
+
+        # Very strong duplicated fragment (4+ words repeated), conservative by design.
+        if re.search(
+            r"\b([a-záéíóúñ]+(?:\s+[a-záéíóúñ]+){3,})\b(?:[\s,;:.]+(?:y|que|de|la|el)\b)?[\s,;:.]+\1\b",
+            compact,
+        ):
+            repeated_fragment_strong = True
+
+        # Clause pattern repetition that typically breaks meaning.
+        if re.search(
+            r"\b(si\s+[a-záéíóúñ]+(?:\s+[a-záéíóúñ]+){1,6})\b[,;:]\s*\1\b",
+            compact,
+        ):
+            repeated_clause_breaking = True
+
+        # Obvious malformed structure from reconstruction artifacts.
+        malformed_patterns = [
+            r"\(\s*\)",  # empty parentheses
+            r"\[\s*\]",  # empty brackets
+            r"(?:\b\w+\b\s+){0,2}(?:\.{2,}|__+)(?:\s+\b\w+\b){0,2}",  # unresolved gaps
+            r"(?:^|[\s(])(?:\)|\]|\})(?:$|[\s,.;:])",  # unmatched closing token
+            r"(?:^|[\s,.;:])(?:\(|\[|\{)(?:$|[\s,.;:])",  # unmatched opening token
+        ]
+        if any(re.search(pattern, text) for pattern in malformed_patterns):
+            motivos.add("estructura_malformada")
+            reconstruction_artifact = True
+
+        if V5ReaderLikeChatGPTExtractor._has_low_semantic_coherence(
+            compact_text=compact,
+            repeated_fragment_strong=repeated_fragment_strong,
+            repeated_clause_breaking=repeated_clause_breaking,
+            reconstruction_artifact=reconstruction_artifact,
+            impossible_flow=impossible_flow,
+        ):
+            motivos.add("coherencia_baja")
+
+        return motivos
+
+    @staticmethod
+    def _has_low_semantic_coherence(
+        compact_text: str,
+        repeated_fragment_strong: bool,
+        repeated_clause_breaking: bool,
+        reconstruction_artifact: bool,
+        impossible_flow: bool,
+    ) -> bool:
+        if not compact_text:
+            return False
+
+        # Strict, rare trigger:
+        # only flag when there is strong evidence of corrupted reconstruction.
+        if repeated_fragment_strong:
+            return True
+        if repeated_clause_breaking and reconstruction_artifact:
+            return True
+        if impossible_flow:
+            return True
+        return False
+
+    @staticmethod
+    def _load_json(path: Path, fallback: Any) -> Any:
+        if not path.exists():
+            return fallback
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+
+    @staticmethod
+    def _write_markdown_review_report(path: Path, report_pages: List[Dict[str, Any]]) -> None:
+        lines = ["# Review report", ""]
+        for page in report_pages:
+            image_name = str(page.get("imagen_origen", "desconocido"))
+            libro = page.get("libro")
+            capitulo = page.get("capitulo")
+            title_right = f"{libro} {capitulo}" if libro is not None and capitulo is not None else "sin referencia"
+            lines.append(f"## {image_name} — {title_right}")
+            for verse in page.get("versiculos_a_revisar", []):
+                motivos = ", ".join(verse.get("motivo", []))
+                lines.append(f"- v{verse.get('versiculo')} — {motivos}")
+            lines.append("")
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as f:
+            f.write("\n".join(lines).rstrip() + "\n")
 
     def _normalize_verses(self, verses: Any) -> List[Dict[str, Any]]:
         norm: List[Dict[str, Any]] = []
