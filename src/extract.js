@@ -11,15 +11,6 @@ const PAGE_TYPES = new Set([
   "unknown",
 ]);
 
-const AUDIT_SUSPICION_TYPES = new Set([
-  "possible_added_word",
-  "possible_replaced_word",
-  "possible_context_completion",
-  "possible_modernization",
-  "possible_rewrite",
-  "uncertain_visual_match",
-]);
-
 const SYSTEM_PROMPT = `Eres un transcriptor visual especializado en textos bíblicos antiguos escaneados.
 
 Tu tarea es leer la imagen proporcionada y extraer únicamente el texto bíblico principal visible.
@@ -48,35 +39,43 @@ Reglas obligatorias:
    - no la completes por contexto;
    - marca el versículo para revisión manual usando requires_review=true y explica la causa en review_notes.`;
 
-const AUDIT_SYSTEM_PROMPT = `Eres un auditor visual de fidelidad documental.
+const AUDIT_SYSTEM_PROMPT = `Compara visualmente el texto extraído contra la imagen palabra por palabra.
 
-Tu tarea NO es transcribir de nuevo.
-Tu tarea es comparar la imagen original con el texto JSON extraído previamente.
+Tu única responsabilidad es detectar si la secuencia visible de palabras deja de coincidir.
 
-Busca únicamente posibles diferencias peligrosas entre lo que se ve en la imagen y lo que fue extraído.
+En cuanto detectes una discrepancia relevante:
+- detente;
+- marca el versículo para revisión manual;
+- continúa con el siguiente versículo.
 
-Debes marcar sospechas cuando detectes:
-- palabras agregadas;
-- palabras reemplazadas;
-- frases completadas por contexto;
-- modernizaciones;
-- reescrituras;
-- texto extraído que no parece estar realmente visible.
+NO intentes:
+- explicar el error;
+- clasificar el error;
+- corregir el error;
+- reinterpretar el texto;
+- completar contexto.
 
-No marques diferencias menores de acentos o tipografía si la palabra base es la misma.
-Ejemplos tolerables:
-Crió / Criò
-movia / movía
-dia / día
+Ignora diferencias menores relacionadas con:
+- acentos;
+- inclinación del acento;
+- diéresis;
+- puntuación;
+- mayúsculas/minúsculas;
+- cursivas;
+- tipografía.
 
-Ejemplos sospechosos:
-aquella / aquel dia
-dióle / le dio
-llamóle / llamó
+Lo importante es la palabra visible como tal.
 
-No corrijas automáticamente.
-No uses otra Biblia como referencia.
-No completes por memoria.
+Ejemplos que NO deben marcarse:
+- dia / día
+- Criò / Crió
+- movia / movía
+
+Ejemplos que SÍ deben marcarse:
+- aquella / aquel
+- dióle / dio
+- llamóle / llamó
+
 Devuelve únicamente JSON válido con la estructura solicitada.`;
 
 function usage() {
@@ -140,9 +139,7 @@ function validateAuditPayload(payload, imageName) {
         return;
       }
       if (!(Number.isInteger(suspicion.verse) || suspicion.verse === null)) errors.push(`audit_suspicion_${i}_verse_invalid`);
-      if (!AUDIT_SUSPICION_TYPES.has(suspicion.type)) errors.push(`audit_suspicion_${i}_type_invalid`);
-      if (typeof suspicion.extracted_text !== "string") errors.push(`audit_suspicion_${i}_extracted_text_invalid`);
-      if (typeof suspicion.suspected_original !== "string") errors.push(`audit_suspicion_${i}_suspected_original_invalid`);
+      if (typeof suspicion.text !== "string") errors.push(`audit_suspicion_${i}_text_invalid`);
       if (typeof suspicion.reason !== "string") errors.push(`audit_suspicion_${i}_reason_invalid`);
     });
   }
@@ -207,8 +204,8 @@ function buildReviewItems(payload, auditPayload = null, auditWarning = null) {
     const matchedVerse = (payload.verses || []).find((v) => v.verse === suspicion.verse);
     items.push({
       verse: suspicion.verse,
-      reason: `Auditor visual: ${suspicion.type} - ${suspicion.reason}`,
-      text: matchedVerse?.text || suspicion.extracted_text,
+      reason: `Auditor visual: ${suspicion.reason}`,
+      text: matchedVerse?.text || suspicion.text,
     });
   });
 
@@ -260,12 +257,10 @@ async function runVisualAudit({ client, imageName, b64, parsed }) {
               items: {
                 type: "object",
                 additionalProperties: false,
-                required: ["verse", "type", "extracted_text", "suspected_original", "reason"],
+                required: ["verse", "text", "reason"],
                 properties: {
                   verse: { type: ["integer", "null"] },
-                  type: { type: "string", enum: [...AUDIT_SUSPICION_TYPES] },
-                  extracted_text: { type: "string" },
-                  suspected_original: { type: "string" },
+                  text: { type: "string" },
                   reason: { type: "string" },
                 },
               },
