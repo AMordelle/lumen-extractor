@@ -24,13 +24,42 @@ npm run extract -- AI156_0005.jpg
 
 El script procesa **una sola imagen por ejecución** y la busca dentro de `AI156_images/`.
 
+## Flujo actual
+
+1. Primera pasada: extracción visual estructurada del texto bíblico.
+2. Validación local estricta del JSON extraído.
+3. Segunda pasada: **auditor visual de fidelidad documental**.
+4. Integración de hallazgos en `output/review/` sin corregir automáticamente el contenido extraído.
+
 ## Salidas
 
 Se generan archivos en:
 
-- `output/raw_responses/`: respuesta cruda completa de la API.
-- `output/pages_json/`: JSON validado localmente.
-- `output/review/`: resumen de revisión manual cuando hay señales de incertidumbre o advertencias.
+- `output/raw_responses/`: respuesta cruda completa de la extracción.
+- `output/pages_json/`: JSON validado localmente de la extracción.
+- `output/audit/`: respuesta estructurada del auditor visual de fidelidad.
+- `output/review/`: resumen de revisión manual con incidencias del extractor y sospechas del auditor.
+
+## Auditor visual de fidelidad documental
+
+El auditor visual es una **segunda pasada** con OpenAI. Su objetivo es comparar:
+
+- la imagen original;
+- el JSON ya extraído (versículos).
+
+El auditor **no reextrae**, **no corrige automáticamente** y **no modifica** `output/pages_json/`.
+Solo reporta sospechas de fidelidad documental (por ejemplo palabras añadidas, reemplazadas, modernizadas o frases completadas por contexto) para revisión humana.
+
+Tipos de sospecha soportados:
+
+- `possible_added_word`
+- `possible_replaced_word`
+- `possible_context_completion`
+- `possible_modernization`
+- `possible_rewrite`
+- `uncertain_visual_match`
+
+Si la auditoría falla o devuelve JSON inválido, el proceso principal no se rompe: se agrega un warning en `output/review/`.
 
 ## Campos de revisión
 
@@ -62,7 +91,9 @@ Se agregan `items` cuando ocurre cualquiera de estos casos:
 - un versículo tiene `is_partial = true`;
 - un versículo tiene `uncertain_words`;
 - un versículo tiene `requires_review = true`;
-- un versículo incluye `review_notes`.
+- un versículo incluye `review_notes`;
+- el auditor visual detecta sospechas;
+- la auditoría visual no pudo completarse o respondió de forma inválida.
 
 ## Limitaciones actuales
 
