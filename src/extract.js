@@ -11,6 +11,15 @@ const PAGE_TYPES = new Set([
   "unknown",
 ]);
 
+const AUDIT_SUSPICION_TYPES = new Set([
+  "possible_added_word",
+  "possible_replaced_word",
+  "possible_context_completion",
+  "possible_modernization",
+  "possible_rewrite",
+  "uncertain_visual_match",
+]);
+
 const SYSTEM_PROMPT = `Eres un transcriptor visual especializado en textos bíblicos antiguos escaneados.
 
 Tu tarea es leer la imagen proporcionada y extraer únicamente el texto bíblico principal visible.
@@ -38,6 +47,37 @@ Reglas obligatorias:
    - no la reemplaces;
    - no la completes por contexto;
    - marca el versículo para revisión manual usando requires_review=true y explica la causa en review_notes.`;
+
+const AUDIT_SYSTEM_PROMPT = `Eres un auditor visual de fidelidad documental.
+
+Tu tarea NO es transcribir de nuevo.
+Tu tarea es comparar la imagen original con el texto JSON extraído previamente.
+
+Busca únicamente posibles diferencias peligrosas entre lo que se ve en la imagen y lo que fue extraído.
+
+Debes marcar sospechas cuando detectes:
+- palabras agregadas;
+- palabras reemplazadas;
+- frases completadas por contexto;
+- modernizaciones;
+- reescrituras;
+- texto extraído que no parece estar realmente visible.
+
+No marques diferencias menores de acentos o tipografía si la palabra base es la misma.
+Ejemplos tolerables:
+Crió / Criò
+movia / movía
+dia / día
+
+Ejemplos sospechosos:
+aquella / aquel dia
+dióle / le dio
+llamóle / llamó
+
+No corrijas automáticamente.
+No uses otra Biblia como referencia.
+No completes por memoria.
+Devuelve únicamente JSON válido con la estructura solicitada.`;
 
 function usage() {
   console.log("Uso: npm run extract -- AI156_0005.jpg");
@@ -87,7 +127,30 @@ function validatePayload(payload, imageName) {
   return { valid: errors.length === 0, errors };
 }
 
-function buildReviewItems(payload) {
+function validateAuditPayload(payload, imageName) {
+  const errors = [];
+  if (!payload || typeof payload !== "object") errors.push("audit_payload_not_object");
+  if (payload.image !== imageName) errors.push("audit_image_mismatch");
+  if (!Array.isArray(payload.suspicions)) errors.push("audit_suspicions_not_array");
+
+  if (Array.isArray(payload.suspicions)) {
+    payload.suspicions.forEach((suspicion, i) => {
+      if (!suspicion || typeof suspicion !== "object") {
+        errors.push(`audit_suspicion_${i}_not_object`);
+        return;
+      }
+      if (!(Number.isInteger(suspicion.verse) || suspicion.verse === null)) errors.push(`audit_suspicion_${i}_verse_invalid`);
+      if (!AUDIT_SUSPICION_TYPES.has(suspicion.type)) errors.push(`audit_suspicion_${i}_type_invalid`);
+      if (typeof suspicion.extracted_text !== "string") errors.push(`audit_suspicion_${i}_extracted_text_invalid`);
+      if (typeof suspicion.suspected_original !== "string") errors.push(`audit_suspicion_${i}_suspected_original_invalid`);
+      if (typeof suspicion.reason !== "string") errors.push(`audit_suspicion_${i}_reason_invalid`);
+    });
+  }
+
+  return { valid: errors.length === 0, errors };
+}
+
+function buildReviewItems(payload, auditPayload = null, auditWarning = null) {
   const items = [];
 
   (payload.warnings || []).forEach((warning) => {
@@ -132,7 +195,89 @@ function buildReviewItems(payload) {
     });
   });
 
+  if (auditWarning) {
+    items.push({
+      verse: null,
+      reason: `Warning de auditoría visual: ${auditWarning}`,
+      text: "",
+    });
+  }
+
+  (auditPayload?.suspicions || []).forEach((suspicion) => {
+    const matchedVerse = (payload.verses || []).find((v) => v.verse === suspicion.verse);
+    items.push({
+      verse: suspicion.verse,
+      reason: `Auditor visual: ${suspicion.type} - ${suspicion.reason}`,
+      text: matchedVerse?.text || suspicion.extracted_text,
+    });
+  });
+
   return items;
+}
+
+function buildAuditInput(parsed) {
+  return {
+    image: parsed.image,
+    verses: (parsed.verses || []).map((v) => ({ verse: v.verse, text: v.text })),
+  };
+}
+
+async function runVisualAudit({ client, imageName, b64, parsed }) {
+  const response = await client.responses.create({
+    model: "gpt-5.4",
+    input: [
+      {
+        role: "system",
+        content: [{ type: "input_text", text: AUDIT_SYSTEM_PROMPT }],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: `Compara esta imagen contra el JSON extraído y devuelve solo sospechas válidas:\n${JSON.stringify(buildAuditInput(parsed))}`,
+          },
+          {
+            type: "input_image",
+            image_url: `data:image/jpeg;base64,${b64}`,
+            detail: "high",
+          },
+        ],
+      },
+    ],
+    text: {
+      format: {
+        type: "json_schema",
+        name: "visual_fidelity_audit",
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["image", "suspicions"],
+          properties: {
+            image: { type: "string" },
+            suspicions: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["verse", "type", "extracted_text", "suspected_original", "reason"],
+                properties: {
+                  verse: { type: ["integer", "null"] },
+                  type: { type: "string", enum: [...AUDIT_SUSPICION_TYPES] },
+                  extracted_text: { type: "string" },
+                  suspected_original: { type: "string" },
+                  reason: { type: "string" },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const parsedAudit = JSON.parse(response.output_text);
+  return { response, parsedAudit };
 }
 
 async function main() {
@@ -221,6 +366,7 @@ async function main() {
 
   await fs.mkdir("output/raw_responses", { recursive: true });
   await fs.mkdir("output/pages_json", { recursive: true });
+  await fs.mkdir("output/audit", { recursive: true });
   await fs.mkdir("output/review", { recursive: true });
 
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -236,11 +382,27 @@ async function main() {
 
   await fs.writeFile(`output/pages_json/${base}.json`, JSON.stringify(parsed, null, 2), "utf-8");
 
-  const reviewItems = buildReviewItems(parsed);
+  let auditPayload = null;
+  let auditWarning = null;
+  try {
+    const { response: auditResponse, parsedAudit } = await runVisualAudit({ client, imageName, b64, parsed });
+    await fs.writeFile(`output/audit/${base}.json`, JSON.stringify(auditResponse, null, 2), "utf-8");
+
+    const auditValidation = validateAuditPayload(parsedAudit, imageName);
+    if (!auditValidation.valid) {
+      auditWarning = `Respuesta inválida del auditor: ${auditValidation.errors.join(", ")}`;
+    } else {
+      auditPayload = parsedAudit;
+    }
+  } catch (error) {
+    auditWarning = `No se pudo completar la auditoría visual: ${error.message}`;
+  }
+
+  const reviewItems = buildReviewItems(parsed, auditPayload, auditWarning);
   if (parsed.requires_manual_review || reviewItems.length > 0) {
     const reviewPayload = {
       image: imageName,
-      requires_manual_review: parsed.requires_manual_review || reviewItems.length > 0,
+      requires_manual_review: true,
       items: reviewItems,
     };
     await fs.writeFile(`output/review/${base}.json`, JSON.stringify(reviewPayload, null, 2), "utf-8");
@@ -249,6 +411,8 @@ async function main() {
   console.log(`Extracción completada: ${imageName}`);
   console.log(`Raw: output/raw_responses/${base}.json`);
   console.log(`Validado: output/pages_json/${base}.json`);
+  if (auditPayload) console.log(`Auditoría: output/audit/${base}.json`);
+  if (auditWarning) console.log(`Auditoría con warning: ${auditWarning}`);
   if (parsed.requires_manual_review || reviewItems.length > 0) console.log(`Revisión: output/review/${base}.json`);
 }
 
