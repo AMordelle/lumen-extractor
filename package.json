@@ -1,0 +1,12 @@
+{
+  "name": "lumen-extractor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "extract": "node src/extract.js"
+  },
+  "dependencies": {
+    "openai": "^4.102.0"
+  }
+}
