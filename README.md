@@ -30,7 +30,39 @@ Se generan archivos en:
 
 - `output/raw_responses/`: respuesta cruda completa de la API.
 - `output/pages_json/`: JSON validado localmente.
-- `output/review/`: reporte para revisión automática cuando hay dudas/warnings.
+- `output/review/`: resumen de revisión manual cuando hay señales de incertidumbre o advertencias.
+
+## Campos de revisión
+
+### `requires_manual_review` (nivel página)
+
+- `true`: la página completa requiere revisión humana.
+- `false`: no se detectaron señales suficientes para forzar revisión manual de página.
+
+Se complementa con `review_reasons` (array de strings) para explicar por qué la página se marcó.
+
+### `requires_review` (nivel versículo)
+
+- `true`: ese versículo requiere inspección humana puntual.
+- `false`: no se marcó ese versículo para revisión.
+
+Se complementa con `review_notes` (array de strings) para documentar el motivo concreto por versículo.
+
+## Cómo interpretar `output/review/`
+
+El archivo de `output/review/` es un resumen operativo para revisión humana. Incluye:
+
+- `image`
+- `requires_manual_review`
+- `items`: lista de incidencias con `verse`, `reason` y `text`.
+
+Se agregan `items` cuando ocurre cualquiera de estos casos:
+
+- existen `warnings` en la página;
+- un versículo tiene `is_partial = true`;
+- un versículo tiene `uncertain_words`;
+- un versículo tiene `requires_review = true`;
+- un versículo incluye `review_notes`.
 
 ## Limitaciones actuales
 
