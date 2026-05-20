@@ -29,7 +29,15 @@ Reglas obligatorias:
 11. Si una palabra no se distingue con seguridad, colócala en uncertain_words.
 12. Si un versículo está cortado o incompleto por la imagen, marca is_partial como true.
 13. Si no puedes identificar libro, capítulo o número de versículo, usa null.
-14. Devuelve únicamente JSON válido usando la estructura solicitada.`;
+14. Devuelve únicamente JSON válido usando la estructura solicitada.
+15. NO completes frases parcialmente visibles aunque creas entender el contexto.
+16. NO reemplaces palabras antiguas por versiones modernas o interpretadas.
+17. Transcribe exactamente las palabras visibles incluso si parecen extrañas, incompletas o ambiguas.
+18. Si no puedes identificar una palabra con suficiente certeza:
+   - no la inventes;
+   - no la reemplaces;
+   - no la completes por contexto;
+   - marca el versículo para revisión manual usando requires_review=true y explica la causa en review_notes.`;
 
 function usage() {
   console.log("Uso: npm run extract -- AI156_0005.jpg");
@@ -43,6 +51,13 @@ function validatePayload(payload, imageName) {
   if (!Array.isArray(payload.verses)) errors.push("verses_not_array");
   if (!Array.isArray(payload.ignored_elements)) errors.push("ignored_elements_not_array");
   if (!Array.isArray(payload.warnings)) errors.push("warnings_not_array");
+  if (typeof payload.requires_manual_review !== "boolean") errors.push("requires_manual_review_invalid");
+  if (!Array.isArray(payload.review_reasons)) errors.push("review_reasons_not_array");
+  if (Array.isArray(payload.review_reasons)) {
+    payload.review_reasons.forEach((reason, i) => {
+      if (typeof reason !== "string") errors.push(`review_reasons_${i}_not_string`);
+    });
+  }
 
   if (Array.isArray(payload.verses)) {
     payload.verses.forEach((v, i) => {
@@ -54,36 +69,70 @@ function validatePayload(payload, imageName) {
       if (typeof v.text !== "string") errors.push(`verse_${i}_text_invalid`);
       if (typeof v.is_partial !== "boolean") errors.push(`verse_${i}_is_partial_invalid`);
       if (!Array.isArray(v.uncertain_words)) errors.push(`verse_${i}_uncertain_words_invalid`);
+      if (typeof v.requires_review !== "boolean") errors.push(`verse_${i}_requires_review_invalid`);
+      if (!Array.isArray(v.review_notes)) errors.push(`verse_${i}_review_notes_invalid`);
+      if (Array.isArray(v.uncertain_words)) {
+        v.uncertain_words.forEach((word, j) => {
+          if (typeof word !== "string") errors.push(`verse_${i}_uncertain_words_${j}_not_string`);
+        });
+      }
+      if (Array.isArray(v.review_notes)) {
+        v.review_notes.forEach((note, j) => {
+          if (typeof note !== "string") errors.push(`verse_${i}_review_notes_${j}_not_string`);
+        });
+      }
     });
   }
 
   return { valid: errors.length === 0, errors };
 }
 
-function buildReviewFlags(payload) {
-  const flags = [];
-  const uncertainCount = (payload.verses || []).reduce(
-    (sum, v) => sum + (Array.isArray(v.uncertain_words) ? v.uncertain_words.length : 0),
-    0,
-  );
+function buildReviewItems(payload) {
+  const items = [];
 
-  if (uncertainCount >= 5) flags.push("too_many_uncertain_words");
-  if ((payload.warnings || []).length > 0) flags.push("model_reported_warnings");
+  (payload.warnings || []).forEach((warning) => {
+    items.push({
+      verse: null,
+      reason: `Warning de página: ${warning}`,
+      text: "",
+    });
+  });
 
-  const verses = (payload.verses || []).map((v) => v.verse).filter((n) => Number.isInteger(n));
-  for (let i = 1; i < verses.length; i += 1) {
-    if (verses[i] < verses[i - 1]) {
-      flags.push("verses_out_of_order");
-      break;
+  (payload.verses || []).forEach((v) => {
+    if (v.is_partial) {
+      items.push({
+        verse: v.verse,
+        reason: "Versículo incompleto por corte o visibilidad parcial.",
+        text: v.text,
+      });
     }
-  }
 
-  const warningText = JSON.stringify(payload.warnings || []).toLowerCase();
-  if (warningText.includes("nota") || warningText.includes("footnote")) flags.push("mixed_notes_detected");
-  if (warningText.includes("moderniz")) flags.push("possible_modernization");
-  if (warningText.includes("referenc") || warningText.includes("numerit")) flags.push("small_reference_numbers_detected");
+    if ((v.uncertain_words || []).length > 0) {
+      items.push({
+        verse: v.verse,
+        reason: `Palabras inciertas detectadas: ${v.uncertain_words.join(", ")}`,
+        text: v.text,
+      });
+    }
 
-  return flags;
+    if (v.requires_review) {
+      items.push({
+        verse: v.verse,
+        reason: "El modelo marcó requires_review=true para este versículo.",
+        text: v.text,
+      });
+    }
+
+    (v.review_notes || []).forEach((note) => {
+      items.push({
+        verse: v.verse,
+        reason: `Nota de revisión: ${note}`,
+        text: v.text,
+      });
+    });
+  });
+
+  return items;
 }
 
 async function main() {
@@ -128,7 +177,17 @@ async function main() {
         schema: {
           type: "object",
           additionalProperties: false,
-          required: ["image", "page_type", "book", "chapter", "verses", "ignored_elements", "warnings"],
+          required: [
+            "image",
+            "page_type",
+            "book",
+            "chapter",
+            "verses",
+            "ignored_elements",
+            "warnings",
+            "requires_manual_review",
+            "review_reasons",
+          ],
           properties: {
             image: { type: "string" },
             page_type: { type: "string", enum: [...PAGE_TYPES] },
@@ -139,17 +198,21 @@ async function main() {
               items: {
                 type: "object",
                 additionalProperties: false,
-                required: ["verse", "text", "is_partial", "uncertain_words"],
+                required: ["verse", "text", "is_partial", "uncertain_words", "requires_review", "review_notes"],
                 properties: {
                   verse: { type: ["integer", "null"] },
                   text: { type: "string" },
                   is_partial: { type: "boolean" },
                   uncertain_words: { type: "array", items: { type: "string" } },
+                  requires_review: { type: "boolean" },
+                  review_notes: { type: "array", items: { type: "string" } },
                 },
               },
             },
             ignored_elements: { type: "array", items: { type: "string" } },
             warnings: { type: "array", items: { type: "string" } },
+            requires_manual_review: { type: "boolean" },
+            review_reasons: { type: "array", items: { type: "string" } },
           },
         },
       },
@@ -173,14 +236,12 @@ async function main() {
 
   await fs.writeFile(`output/pages_json/${base}.json`, JSON.stringify(parsed, null, 2), "utf-8");
 
-  const reviewFlags = buildReviewFlags(parsed);
-  if (reviewFlags.length > 0) {
+  const reviewItems = buildReviewItems(parsed);
+  if (parsed.requires_manual_review || reviewItems.length > 0) {
     const reviewPayload = {
       image: imageName,
-      review_flags: reviewFlags,
-      warnings: parsed.warnings,
-      uncertain_words_total: parsed.verses.reduce((sum, v) => sum + v.uncertain_words.length, 0),
-      created_at: new Date().toISOString(),
+      requires_manual_review: parsed.requires_manual_review || reviewItems.length > 0,
+      items: reviewItems,
     };
     await fs.writeFile(`output/review/${base}.json`, JSON.stringify(reviewPayload, null, 2), "utf-8");
   }
@@ -188,7 +249,7 @@ async function main() {
   console.log(`Extracción completada: ${imageName}`);
   console.log(`Raw: output/raw_responses/${base}.json`);
   console.log(`Validado: output/pages_json/${base}.json`);
-  if (reviewFlags.length > 0) console.log(`Revisión: output/review/${base}.json`);
+  if (parsed.requires_manual_review || reviewItems.length > 0) console.log(`Revisión: output/review/${base}.json`);
 }
 
 main().catch((err) => {
