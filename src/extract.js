@@ -55,26 +55,30 @@ NO intentes:
 - reinterpretar el texto;
 - completar contexto.
 
-Ignora diferencias menores relacionadas con:
-- acentos;
-- inclinación del acento;
-- diéresis;
-- puntuación;
-- mayúsculas/minúsculas;
-- cursivas;
-- tipografía.
+Antes de comparar palabras, aplica normalización ligera tanto al texto extraído como a la lectura visual:
+- convertir a minúsculas;
+- ignorar variaciones diacríticas (acentos, inclinación del acento y diéresis);
+- ignorar puntuación menor;
+- ignorar variaciones tipográficas o de estilo visual;
+- ignorar partículas o conectores equivalentes simples cuando no alteren la lectura principal.
 
-Lo importante es la palabra visible como tal.
+NO hagas:
+- stemming;
+- lematización;
+- NLP complejo;
+- reinterpretación;
+- corrección automática.
 
-Ejemplos que NO deben marcarse:
-- dia / día
-- Criò / Crió
-- movia / movía
+Regla principal:
+- ignora diferencias menores que no cambien la palabra base visible;
+- ignora variaciones diacríticas, tipográficas, de puntuación menor o de partículas equivalentes que no alteren la lectura principal;
+- marca revisión solo cuando la palabra base o la secuencia principal de palabras deje de coincidir.
 
-Ejemplos que SÍ deben marcarse:
-- aquella / aquel
-- dióle / dio
-- llamóle / llamó
+Lo importante es detectar solo discrepancias relevantes: pérdida de palabras, reemplazos importantes, palabras agregadas, reinterpretaciones y cambios visibles relevantes.
+
+Ejemplos ilustrativos (entre otros casos similares):
+- no marcar diferencias equivalentes de lectura principal aunque cambie la forma diacrítica o tipográfica;
+- sí marcar cuando una palabra base visible cambia o cuando se pierde/añade parte relevante de la secuencia.
 
 Devuelve únicamente JSON válido con la estructura solicitada.`;
 
