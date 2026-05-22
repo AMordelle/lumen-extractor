@@ -82,6 +82,53 @@ Ejemplos ilustrativos (entre otros casos similares):
 
 Devuelve únicamente JSON válido con la estructura solicitada.`;
 
+const RISK_WARNING_PATTERNS = [
+  /texto\s+cortad/i,
+  /cortad[ao]/i,
+  /baja\s+legibilidad/i,
+  /legibilidad\s+baja/i,
+  /fragmento\s+parcial/i,
+  /parcial/i,
+  /transici[oó]n\s+compleja\s+de\s+p[aá]gina/i,
+  /transici[oó]n\s+de\s+p[aá]gina/i,
+  /p[aá]gina\s+compleja/i,
+];
+
+function isRiskWarning(warning) {
+  if (typeof warning !== "string") return false;
+  return RISK_WARNING_PATTERNS.some((pattern) => pattern.test(warning));
+}
+
+function getRiskVerses(payload) {
+  return (payload.verses || []).filter((v) => {
+    return v.is_partial || (v.uncertain_words || []).length > 0 || v.requires_review || (v.review_notes || []).length > 0;
+  });
+}
+
+function buildRiskAuditInput(parsed) {
+  const riskyWarnings = (parsed.warnings || []).filter((warning) => isRiskWarning(warning));
+  const riskyVerses = getRiskVerses(parsed);
+
+  return {
+    image: parsed.image,
+    context: {
+      warnings: riskyWarnings,
+      risk_summary: {
+        verses_count: riskyVerses.length,
+        warnings_count: riskyWarnings.length,
+      },
+    },
+    verses: riskyVerses.map((v) => ({
+      verse: v.verse,
+      text: v.text,
+      is_partial: v.is_partial,
+      uncertain_words: v.uncertain_words,
+      requires_review: v.requires_review,
+      review_notes: v.review_notes,
+    })),
+  };
+}
+
 function usage() {
   console.log("Uso: npm run extract -- AI156_0005.jpg");
 }
@@ -216,14 +263,12 @@ function buildReviewItems(payload, auditPayload = null, auditWarning = null) {
   return items;
 }
 
-function buildAuditInput(parsed) {
-  return {
-    image: parsed.image,
-    verses: (parsed.verses || []).map((v) => ({ verse: v.verse, text: v.text })),
-  };
-}
-
 async function runVisualAudit({ client, imageName, b64, parsed }) {
+  const auditInput = buildRiskAuditInput(parsed);
+  if (auditInput.verses.length === 0 && auditInput.context.warnings.length === 0) {
+    return { response: null, parsedAudit: { image: imageName, suspicions: [] }, skipped: true };
+  }
+
   const response = await client.responses.create({
     model: "gpt-5.4",
     input: [
@@ -236,7 +281,7 @@ async function runVisualAudit({ client, imageName, b64, parsed }) {
         content: [
           {
             type: "input_text",
-            text: `Compara esta imagen contra el JSON extraído y devuelve solo sospechas válidas:\n${JSON.stringify(buildAuditInput(parsed))}`,
+            text: `Compara esta imagen contra el JSON extraído y devuelve solo sospechas válidas:\n${JSON.stringify(buildRiskAuditInput(parsed))}`,
           },
           {
             type: "input_image",
@@ -276,7 +321,7 @@ async function runVisualAudit({ client, imageName, b64, parsed }) {
   });
 
   const parsedAudit = JSON.parse(response.output_text);
-  return { response, parsedAudit };
+  return { response, parsedAudit, skipped: false };
 }
 
 async function main() {
@@ -384,8 +429,10 @@ async function main() {
   let auditPayload = null;
   let auditWarning = null;
   try {
-    const { response: auditResponse, parsedAudit } = await runVisualAudit({ client, imageName, b64, parsed });
-    await fs.writeFile(`output/audit/${base}.json`, JSON.stringify(auditResponse, null, 2), "utf-8");
+    const { response: auditResponse, parsedAudit, skipped } = await runVisualAudit({ client, imageName, b64, parsed });
+    if (!skipped && auditResponse) {
+      await fs.writeFile(`output/audit/${base}.json`, JSON.stringify(auditResponse, null, 2), "utf-8");
+    }
 
     const auditValidation = validateAuditPayload(parsedAudit, imageName);
     if (!auditValidation.valid) {
@@ -410,7 +457,13 @@ async function main() {
   console.log(`Extracción completada: ${imageName}`);
   console.log(`Raw: output/raw_responses/${base}.json`);
   console.log(`Validado: output/pages_json/${base}.json`);
-  if (auditPayload) console.log(`Auditoría: output/audit/${base}.json`);
+  if (auditPayload) {
+    if ((auditPayload.suspicions || []).length > 0) {
+      console.log(`Auditoría dirigida: output/audit/${base}.json`);
+    } else {
+      console.log("Auditoría dirigida sin sospechas adicionales.");
+    }
+  }
   if (auditWarning) console.log(`Auditoría con warning: ${auditWarning}`);
   if (parsed.requires_manual_review || reviewItems.length > 0) console.log(`Revisión: output/review/${base}.json`);
 }
