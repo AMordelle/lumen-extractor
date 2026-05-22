@@ -32,6 +32,67 @@ El script procesa **una sola imagen por ejecución** y la busca dentro de `AI156
 4. Segunda pasada: **auditor visual dirigido** solo sobre segmentos riesgosos.
 5. Integración de hallazgos en `output/review/` sin corregir automáticamente el contenido extraído.
 
+## Esquema estructural por secciones (`sections[]`)
+
+Ahora la salida principal está diseñada para páginas que pueden contener transición de capítulo en una misma imagen.
+
+En lugar de depender de `book`, `chapter` y `verses` a nivel raíz, el JSON usa:
+
+- `sections[]` (fuente principal)
+- cada sección incluye su propio:
+  - `book` (`string|null`)
+  - `chapter` (`int|null`)
+  - `verses[]`
+
+Esto permite modelar correctamente casos como:
+
+- cierre de un capítulo y comienzo del siguiente en la misma página;
+- fragmentos bíblicos parciales sin numeración visible;
+- continuidad desde página anterior y hacia página siguiente.
+
+### Estructura resumida
+
+```json
+{
+  "image": "AI156_0019.jpg",
+  "page_type": "mixed_biblical_and_notes",
+  "sections": [
+    {
+      "book": "Génesis",
+      "chapter": 1,
+      "verses": [
+        {
+          "verse": 25,
+          "text": "...",
+          "is_partial": false,
+          "position": "complete_on_page",
+          "uncertain_words": [],
+          "requires_review": false,
+          "review_notes": []
+        }
+      ]
+    }
+  ]
+}
+```
+
+Si no se puede determinar con certeza el libro o capítulo, se usa `null` en el campo correspondiente de esa sección.
+
+## Campo `position` por versículo
+
+Cada versículo/framento debe incluir `position` con uno de estos valores:
+
+- `complete_on_page`
+- `starts_on_page`
+- `continues_from_previous_page`
+- `continues_on_next_page`
+- `fragment_without_visible_number`
+
+Uso operativo:
+
+- fragmento al inicio sin numeración visible: `verse=null` y `position=fragment_without_visible_number` o `continues_from_previous_page`;
+- versículo cortado al final: `is_partial=true` y `position=continues_on_next_page`.
+
 ## Salidas
 
 Se generan archivos en:
@@ -47,7 +108,7 @@ El auditor visual es una **segunda pasada dirigida** con OpenAI.
 
 Ahora el extractor decide qué auditar: el auditor recibe solo un subconjunto mínimo (no la página completa) compuesto por:
 
-- versículos con `is_partial = true`;
+- versículos (en `sections[].verses[]`) con `is_partial = true`;
 - versículos con `uncertain_words` no vacío;
 - versículos con `requires_review = true`;
 - versículos con `review_notes` no vacío;
@@ -99,7 +160,13 @@ El archivo de `output/review/` es un resumen operativo para revisión humana. In
 
 - `image`
 - `requires_manual_review`
-- `items`: lista de incidencias con `verse`, `reason` y `text`.
+- `items`: lista de incidencias con `book`, `chapter`, `verse`, `reasons` y `text`.
+
+Notas importantes:
+
+- El generador de review recorre `sections[].verses[]`.
+- Si dos elementos tienen el mismo `verse` pero distinto `chapter`, se tratan como incidencias distintas.
+- Warnings generales de página se representan con `book/chapter/verse = null`.
 
 Se agregan `items` cuando ocurre cualquiera de estos casos:
 

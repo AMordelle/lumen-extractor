@@ -10,6 +10,13 @@ const PAGE_TYPES = new Set([
   "non_biblical",
   "unknown",
 ]);
+const VERSE_POSITIONS = new Set([
+  "complete_on_page",
+  "starts_on_page",
+  "continues_from_previous_page",
+  "continues_on_next_page",
+  "fragment_without_visible_number",
+]);
 
 const SYSTEM_PROMPT = `Eres un transcriptor visual especializado en textos bíblicos antiguos escaneados.
 
@@ -112,9 +119,15 @@ function isRiskWarning(warning) {
 }
 
 function getRiskVerses(payload) {
-  return (payload.verses || []).filter((v) => {
-    return v.is_partial || (v.uncertain_words || []).length > 0 || v.requires_review || (v.review_notes || []).length > 0;
+  const risky = [];
+  (payload.sections || []).forEach((section) => {
+    (section.verses || []).forEach((v) => {
+      if (v.is_partial || (v.uncertain_words || []).length > 0 || v.requires_review || (v.review_notes || []).length > 0) {
+        risky.push({ ...v, book: section.book, chapter: section.chapter });
+      }
+    });
   });
+  return risky;
 }
 
 function buildRiskAuditInput(parsed) {
@@ -131,6 +144,8 @@ function buildRiskAuditInput(parsed) {
       },
     },
     verses: riskyVerses.map((v) => ({
+      book: v.book,
+      chapter: v.chapter,
       verse: v.verse,
       text: v.text,
       is_partial: v.is_partial,
@@ -150,7 +165,7 @@ function validatePayload(payload, imageName) {
   if (!payload || typeof payload !== "object") errors.push("payload_not_object");
   if (payload.image !== imageName) errors.push("image_mismatch");
   if (!PAGE_TYPES.has(payload.page_type)) errors.push("invalid_page_type");
-  if (!Array.isArray(payload.verses)) errors.push("verses_not_array");
+  if (!Array.isArray(payload.sections)) errors.push("sections_not_array");
   if (!Array.isArray(payload.ignored_elements)) errors.push("ignored_elements_not_array");
   if (!Array.isArray(payload.warnings)) errors.push("warnings_not_array");
   if (typeof payload.requires_manual_review !== "boolean") errors.push("requires_manual_review_invalid");
@@ -161,28 +176,39 @@ function validatePayload(payload, imageName) {
     });
   }
 
-  if (Array.isArray(payload.verses)) {
-    payload.verses.forEach((v, i) => {
-      if (typeof v !== "object" || v === null) {
-        errors.push(`verse_${i}_not_object`);
+  if (Array.isArray(payload.sections)) {
+    payload.sections.forEach((section, sectionIndex) => {
+      if (typeof section !== "object" || section === null) {
+        errors.push(`section_${sectionIndex}_not_object`);
         return;
       }
-      if (!(Number.isInteger(v.verse) || v.verse === null)) errors.push(`verse_${i}_verse_invalid`);
-      if (typeof v.text !== "string") errors.push(`verse_${i}_text_invalid`);
-      if (typeof v.is_partial !== "boolean") errors.push(`verse_${i}_is_partial_invalid`);
-      if (!Array.isArray(v.uncertain_words)) errors.push(`verse_${i}_uncertain_words_invalid`);
-      if (typeof v.requires_review !== "boolean") errors.push(`verse_${i}_requires_review_invalid`);
-      if (!Array.isArray(v.review_notes)) errors.push(`verse_${i}_review_notes_invalid`);
+      if (!(typeof section.book === "string" || section.book === null)) errors.push(`section_${sectionIndex}_book_invalid`);
+      if (!(Number.isInteger(section.chapter) || section.chapter === null)) errors.push(`section_${sectionIndex}_chapter_invalid`);
+      if (!Array.isArray(section.verses)) errors.push(`section_${sectionIndex}_verses_not_array`);
+      if (!Array.isArray(section.verses)) return;
+      section.verses.forEach((v, i) => {
+      if (typeof v !== "object" || v === null) {
+        errors.push(`section_${sectionIndex}_verse_${i}_not_object`);
+        return;
+      }
+      if (!(Number.isInteger(v.verse) || v.verse === null)) errors.push(`section_${sectionIndex}_verse_${i}_verse_invalid`);
+      if (typeof v.text !== "string") errors.push(`section_${sectionIndex}_verse_${i}_text_invalid`);
+      if (typeof v.is_partial !== "boolean") errors.push(`section_${sectionIndex}_verse_${i}_is_partial_invalid`);
+      if (!VERSE_POSITIONS.has(v.position)) errors.push(`section_${sectionIndex}_verse_${i}_position_invalid`);
+      if (!Array.isArray(v.uncertain_words)) errors.push(`section_${sectionIndex}_verse_${i}_uncertain_words_invalid`);
+      if (typeof v.requires_review !== "boolean") errors.push(`section_${sectionIndex}_verse_${i}_requires_review_invalid`);
+      if (!Array.isArray(v.review_notes)) errors.push(`section_${sectionIndex}_verse_${i}_review_notes_invalid`);
       if (Array.isArray(v.uncertain_words)) {
         v.uncertain_words.forEach((word, j) => {
-          if (typeof word !== "string") errors.push(`verse_${i}_uncertain_words_${j}_not_string`);
+          if (typeof word !== "string") errors.push(`section_${sectionIndex}_verse_${i}_uncertain_words_${j}_not_string`);
         });
       }
       if (Array.isArray(v.review_notes)) {
         v.review_notes.forEach((note, j) => {
-          if (typeof note !== "string") errors.push(`verse_${i}_review_notes_${j}_not_string`);
+          if (typeof note !== "string") errors.push(`section_${sectionIndex}_verse_${i}_review_notes_${j}_not_string`);
         });
       }
+      });
     });
   }
 
@@ -201,6 +227,8 @@ function validateAuditPayload(payload, imageName) {
         errors.push(`audit_suspicion_${i}_not_object`);
         return;
       }
+      if (!(typeof suspicion.book === "string" || suspicion.book === null)) errors.push(`audit_suspicion_${i}_book_invalid`);
+      if (!(Number.isInteger(suspicion.chapter) || suspicion.chapter === null)) errors.push(`audit_suspicion_${i}_chapter_invalid`);
       if (!(Number.isInteger(suspicion.verse) || suspicion.verse === null)) errors.push(`audit_suspicion_${i}_verse_invalid`);
       if (typeof suspicion.text !== "string") errors.push(`audit_suspicion_${i}_text_invalid`);
       if (typeof suspicion.reason !== "string") errors.push(`audit_suspicion_${i}_reason_invalid`);
@@ -213,10 +241,12 @@ function validateAuditPayload(payload, imageName) {
 function buildReviewItems(payload, auditPayload = null, auditWarning = null) {
   const groups = new Map();
 
-  function ensureGroup(verse, text = "") {
-    const key = verse === null ? "null" : String(verse);
+  function ensureGroup(book, chapter, verse, text = "") {
+    const key = `${book ?? "null"}|${chapter ?? "null"}|${verse ?? "null"}`;
     if (!groups.has(key)) {
       groups.set(key, {
+        book,
+        chapter,
         verse,
         reasons: [],
         text,
@@ -227,27 +257,41 @@ function buildReviewItems(payload, auditPayload = null, auditWarning = null) {
     return groups.get(key);
   }
 
-  function addReason(verse, reason, text = "") {
-    const group = ensureGroup(verse, text);
+  function addReason(book, chapter, verse, reason, text = "") {
+    const group = ensureGroup(book, chapter, verse, text);
     if (!group.reasons.includes(reason)) group.reasons.push(reason);
   }
 
   (payload.warnings || []).forEach((warning) => {
-    addReason(null, `Warning de página: ${warning}`, "");
+    addReason(null, null, null, `Warning de página: ${warning}`, "");
   });
 
-  (payload.verses || []).forEach((v) => {
-    if (v.is_partial) addReason(v.verse, "Versículo incompleto por corte o visibilidad parcial.", v.text);
-    if ((v.uncertain_words || []).length > 0) addReason(v.verse, `Palabras inciertas detectadas: ${v.uncertain_words.join(", ")}`, v.text);
-    if (v.requires_review) addReason(v.verse, "El modelo marcó requires_review=true para este versículo.", v.text);
-    (v.review_notes || []).forEach((note) => addReason(v.verse, `Nota de revisión: ${note}`, v.text));
+  (payload.sections || []).forEach((section) => {
+    (section.verses || []).forEach((v) => {
+      if (v.is_partial) addReason(section.book, section.chapter, v.verse, "Versículo incompleto por corte o visibilidad parcial.", v.text);
+      if ((v.uncertain_words || []).length > 0) {
+        addReason(section.book, section.chapter, v.verse, `Palabras inciertas detectadas: ${v.uncertain_words.join(", ")}`, v.text);
+      }
+      if (v.requires_review) addReason(section.book, section.chapter, v.verse, "El modelo marcó requires_review=true para este versículo.", v.text);
+      (v.review_notes || []).forEach((note) => addReason(section.book, section.chapter, v.verse, `Nota de revisión: ${note}`, v.text));
+    });
   });
 
-  if (auditWarning) addReason(null, `Warning de auditoría visual: ${auditWarning}`, "");
+  if (auditWarning) addReason(null, null, null, `Warning de auditoría visual: ${auditWarning}`, "");
 
   (auditPayload?.suspicions || []).forEach((suspicion) => {
-    const matchedVerse = (payload.verses || []).find((v) => v.verse === suspicion.verse);
-    addReason(suspicion.verse, `Auditor visual: ${suspicion.reason}`, matchedVerse?.text || suspicion.text);
+    let matchedVerse = null;
+    (payload.sections || []).some((section) => {
+      const found = (section.verses || []).find(
+        (v) => v.verse === suspicion.verse && v.text === suspicion.text && section.book === suspicion.book && section.chapter === suspicion.chapter,
+      );
+      if (found) {
+        matchedVerse = { ...found, book: section.book, chapter: section.chapter };
+        return true;
+      }
+      return false;
+    });
+    addReason(suspicion.book, suspicion.chapter, suspicion.verse, `Auditor visual: ${suspicion.reason}`, matchedVerse?.text || suspicion.text);
   });
 
   return Array.from(groups.values());
@@ -296,8 +340,10 @@ async function runVisualAudit({ client, imageName, b64, parsed }) {
               items: {
                 type: "object",
                 additionalProperties: false,
-                required: ["verse", "text", "reason"],
+                required: ["book", "chapter", "verse", "text", "reason"],
                 properties: {
+                  book: { type: ["string", "null"] },
+                  chapter: { type: ["integer", "null"] },
                   verse: { type: ["integer", "null"] },
                   text: { type: "string" },
                   reason: { type: "string" },
@@ -359,9 +405,7 @@ async function main() {
           required: [
             "image",
             "page_type",
-            "book",
-            "chapter",
-            "verses",
+            "sections",
             "ignored_elements",
             "warnings",
             "requires_manual_review",
@@ -370,21 +414,32 @@ async function main() {
           properties: {
             image: { type: "string" },
             page_type: { type: "string", enum: [...PAGE_TYPES] },
-            book: { type: ["string", "null"] },
-            chapter: { type: ["integer", "null"] },
-            verses: {
+            sections: {
               type: "array",
               items: {
                 type: "object",
                 additionalProperties: false,
-                required: ["verse", "text", "is_partial", "uncertain_words", "requires_review", "review_notes"],
+                required: ["book", "chapter", "verses"],
                 properties: {
-                  verse: { type: ["integer", "null"] },
-                  text: { type: "string" },
-                  is_partial: { type: "boolean" },
-                  uncertain_words: { type: "array", items: { type: "string" } },
-                  requires_review: { type: "boolean" },
-                  review_notes: { type: "array", items: { type: "string" } },
+                  book: { type: ["string", "null"] },
+                  chapter: { type: ["integer", "null"] },
+                  verses: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      additionalProperties: false,
+                      required: ["verse", "text", "is_partial", "position", "uncertain_words", "requires_review", "review_notes"],
+                      properties: {
+                        verse: { type: ["integer", "null"] },
+                        text: { type: "string" },
+                        is_partial: { type: "boolean" },
+                        position: { type: "string", enum: [...VERSE_POSITIONS] },
+                        uncertain_words: { type: "array", items: { type: "string" } },
+                        requires_review: { type: "boolean" },
+                        review_notes: { type: "array", items: { type: "string" } },
+                      },
+                    },
+                  },
                 },
               },
             },
