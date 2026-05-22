@@ -56,7 +56,9 @@ Reglas obligatorias:
 21. Prefiere incertidumbre antes que reinterpretación.
 22. Marca requires_review=true cuando exista palabra borrosa, parcialmente visible, comprimida, deformada, antigua difícil de distinguir, lectura ambigua o duda razonable entre lecturas posibles.
 23. No marques un versículo para revisión únicamente por diferencias menores de acentuación, inclinación del acento, diéresis, puntuación menor, mayúsculas/minúsculas o tipografía, siempre que la palabra base visible sea la misma.
-24. La revisión debe activarse cuando exista duda sobre la palabra base, no sobre detalles gráficos menores.`;
+24. La revisión debe activarse cuando exista duda sobre la palabra base, no sobre detalles gráficos menores.
+25. Si al inicio de la página hay texto bíblico visible que viene de una página anterior o no tiene número visible, DEBES incluirlo estructuralmente en sections[].verses[] como fragmento (verse=null si aplica), con is_partial=true y position=continues_from_previous_page o fragment_without_visible_number según corresponda.
+26. Nunca omitas ese fragmento inicial limitándote a warnings: debe existir en sections[].verses[] con el texto visible literal.`;
 
 const AUDIT_SYSTEM_PROMPT = `Compara visualmente el texto extraído contra la imagen palabra por palabra.
 
@@ -112,10 +114,35 @@ const RISK_WARNING_PATTERNS = [
   /transici[oó]n\s+de\s+p[aá]gina/i,
   /p[aá]gina\s+compleja/i,
 ];
+const INITIAL_FRAGMENT_WARNING_PATTERNS = [
+  /inicio\s+de\s+p[aá]gina/i,
+  /comienzo\s+de\s+p[aá]gina/i,
+  /viene\s+de\s+la\s+p[aá]gina\s+anterior/i,
+  /contin[uú]a\s+desde\s+la\s+p[aá]gina\s+anterior/i,
+  /continuaci[oó]n\s+de\s+p[aá]gina\s+anterior/i,
+  /fragmento\s+inicial/i,
+];
 
 function isRiskWarning(warning) {
   if (typeof warning !== "string") return false;
   return RISK_WARNING_PATTERNS.some((pattern) => pattern.test(warning));
+}
+
+function isInitialFragmentWarning(warning) {
+  if (typeof warning !== "string") return false;
+  return INITIAL_FRAGMENT_WARNING_PATTERNS.some((pattern) => pattern.test(warning));
+}
+
+function hasStructuredInitialFragment(payload) {
+  return (payload.sections || []).some((section) =>
+    (section.verses || []).some(
+      (v) =>
+        v?.is_partial === true &&
+        (v?.position === "continues_from_previous_page" || v?.position === "fragment_without_visible_number") &&
+        typeof v?.text === "string" &&
+        v.text.trim().length > 0,
+    ),
+  );
 }
 
 function getRiskVerses(payload) {
@@ -210,6 +237,11 @@ function validatePayload(payload, imageName) {
       }
       });
     });
+  }
+
+  const initialFragmentWarningPresent = (payload.warnings || []).some((warning) => isInitialFragmentWarning(warning));
+  if (initialFragmentWarningPresent && !hasStructuredInitialFragment(payload)) {
+    errors.push("initial_fragment_missing_from_sections");
   }
 
   return { valid: errors.length === 0, errors };

@@ -93,6 +93,10 @@ Uso operativo:
 - fragmento al inicio sin numeración visible: `verse=null` y `position=fragment_without_visible_number` o `continues_from_previous_page`;
 - versículo cortado al final: `is_partial=true` y `position=continues_on_next_page`.
 
+Regla adicional importante:
+
+- si hay fragmento bíblico visible al inicio de página, debe representarse estructuralmente en `sections[].verses[]` (no solo como warning), sin completar texto faltante.
+
 ## Salidas
 
 Se generan archivos en:
