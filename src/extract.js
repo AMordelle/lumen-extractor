@@ -33,11 +33,21 @@ Reglas obligatorias:
 15. NO completes frases parcialmente visibles aunque creas entender el contexto.
 16. NO reemplaces palabras antiguas por versiones modernas o interpretadas.
 17. Transcribe exactamente las palabras visibles incluso si parecen extrañas, incompletas o ambiguas.
-18. Si no puedes identificar una palabra con suficiente certeza:
-   - no la inventes;
+18. Tu única función es transcribir palabra por palabra lo visible.
+19. Si una palabra no se ve claramente:
    - no la reemplaces;
-   - no la completes por contexto;
-   - marca el versículo para revisión manual usando requires_review=true y explica la causa en review_notes.`;
+   - no la completes;
+   - no la modernices;
+   - no uses contexto visual o lingüístico para deducirla;
+   - no conviertas una palabra dudosa en varias palabras más comprensibles.
+20. Si no puedes identificar una palabra con suficiente certeza:
+   - conserva la lectura más literal posible sin reinterpretar;
+   - colócala también en uncertain_words;
+   - marca el versículo para revisión manual usando requires_review=true;
+   - explica la incertidumbre visual en review_notes;
+   - continúa con el siguiente versículo.
+21. Prefiere incertidumbre antes que reinterpretación.
+22. Marca requires_review=true cuando exista palabra borrosa, parcialmente visible, comprimida, deformada, antigua difícil de distinguir, lectura ambigua o duda razonable entre lecturas posibles.`;
 
 const AUDIT_SYSTEM_PROMPT = `Compara visualmente el texto extraído contra la imagen palabra por palabra.
 

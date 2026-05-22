@@ -59,6 +59,24 @@ Solo actúa como segunda validación visual sobre zonas ya marcadas como riesgos
 Si no hay señales de riesgo, la auditoría se omite y se continúa el flujo sin error.
 Si la auditoría falla o devuelve JSON inválido, el proceso principal no se rompe: se agrega un warning en `output/review/`.
 
+## Política estricta de incertidumbre visual
+
+El extractor prioriza la **fidelidad visual documental** por encima de la legibilidad interpretada.
+
+Principios operativos:
+
+- transcribir palabra por palabra lo visible;
+- no adivinar ni completar palabras ambiguas por contexto;
+- no modernizar grafías antiguas ni reinterpretar construcciones dudosas;
+- marcar la incertidumbre en lugar de resolverla automáticamente.
+
+Cuando exista incertidumbre visual (palabra borrosa, parcial, comprimida, deformada, antigua difícil de distinguir o ambigua), el versículo debe marcarse con:
+
+- `requires_review = true`
+- `review_notes` explicando la causa visual de la duda.
+
+El sistema **prefiere revisión humana** antes que reinterpretación automática.
+
 ## Campos de revisión
 
 ### `requires_manual_review` (nivel página)
