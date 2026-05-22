@@ -28,8 +28,9 @@ El script procesa **una sola imagen por ejecución** y la busca dentro de `AI156
 
 1. Primera pasada: extracción visual estructurada del texto bíblico.
 2. Validación local estricta del JSON extraído.
-3. Segunda pasada: **auditor visual de fidelidad documental**.
-4. Integración de hallazgos en `output/review/` sin corregir automáticamente el contenido extraído.
+3. Detección de señales de riesgo del extractor (versículos y warnings).
+4. Segunda pasada: **auditor visual dirigido** solo sobre segmentos riesgosos.
+5. Integración de hallazgos en `output/review/` sin corregir automáticamente el contenido extraído.
 
 ## Salidas
 
@@ -42,23 +43,20 @@ Se generan archivos en:
 
 ## Auditor visual de fidelidad documental
 
-El auditor visual es una **segunda pasada** con OpenAI. Su objetivo es comparar:
+El auditor visual es una **segunda pasada dirigida** con OpenAI.
 
-- la imagen original;
-- el JSON ya extraído (versículos).
+Ahora el extractor decide qué auditar: el auditor recibe solo un subconjunto mínimo (no la página completa) compuesto por:
+
+- versículos con `is_partial = true`;
+- versículos con `uncertain_words` no vacío;
+- versículos con `requires_review = true`;
+- versículos con `review_notes` no vacío;
+- warnings de página relacionados con corte de texto, baja legibilidad, fragmento parcial o transición compleja de página.
 
 El auditor **no reextrae**, **no corrige automáticamente** y **no modifica** `output/pages_json/`.
-Solo reporta sospechas de fidelidad documental (por ejemplo palabras añadidas, reemplazadas, modernizadas o frases completadas por contexto) para revisión humana.
+Solo actúa como segunda validación visual sobre zonas ya marcadas como riesgosas para reducir falsos positivos y ruido.
 
-Tipos de sospecha soportados:
-
-- `possible_added_word`
-- `possible_replaced_word`
-- `possible_context_completion`
-- `possible_modernization`
-- `possible_rewrite`
-- `uncertain_visual_match`
-
+Si no hay señales de riesgo, la auditoría se omite y se continúa el flujo sin error.
 Si la auditoría falla o devuelve JSON inválido, el proceso principal no se rompe: se agrega un warning en `output/review/`.
 
 ## Campos de revisión
