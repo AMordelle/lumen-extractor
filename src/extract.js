@@ -47,7 +47,9 @@ Reglas obligatorias:
    - explica la incertidumbre visual en review_notes;
    - continúa con el siguiente versículo.
 21. Prefiere incertidumbre antes que reinterpretación.
-22. Marca requires_review=true cuando exista palabra borrosa, parcialmente visible, comprimida, deformada, antigua difícil de distinguir, lectura ambigua o duda razonable entre lecturas posibles.`;
+22. Marca requires_review=true cuando exista palabra borrosa, parcialmente visible, comprimida, deformada, antigua difícil de distinguir, lectura ambigua o duda razonable entre lecturas posibles.
+23. No marques un versículo para revisión únicamente por diferencias menores de acentuación, inclinación del acento, diéresis, puntuación menor, mayúsculas/minúsculas o tipografía, siempre que la palabra base visible sea la misma.
+24. La revisión debe activarse cuando exista duda sobre la palabra base, no sobre detalles gráficos menores.`;
 
 const AUDIT_SYSTEM_PROMPT = `Compara visualmente el texto extraído contra la imagen palabra por palabra.
 
@@ -209,68 +211,46 @@ function validateAuditPayload(payload, imageName) {
 }
 
 function buildReviewItems(payload, auditPayload = null, auditWarning = null) {
-  const items = [];
+  const groups = new Map();
+
+  function ensureGroup(verse, text = "") {
+    const key = verse === null ? "null" : String(verse);
+    if (!groups.has(key)) {
+      groups.set(key, {
+        verse,
+        reasons: [],
+        text,
+      });
+    } else if (!groups.get(key).text && text) {
+      groups.get(key).text = text;
+    }
+    return groups.get(key);
+  }
+
+  function addReason(verse, reason, text = "") {
+    const group = ensureGroup(verse, text);
+    if (!group.reasons.includes(reason)) group.reasons.push(reason);
+  }
 
   (payload.warnings || []).forEach((warning) => {
-    items.push({
-      verse: null,
-      reason: `Warning de página: ${warning}`,
-      text: "",
-    });
+    addReason(null, `Warning de página: ${warning}`, "");
   });
 
   (payload.verses || []).forEach((v) => {
-    if (v.is_partial) {
-      items.push({
-        verse: v.verse,
-        reason: "Versículo incompleto por corte o visibilidad parcial.",
-        text: v.text,
-      });
-    }
-
-    if ((v.uncertain_words || []).length > 0) {
-      items.push({
-        verse: v.verse,
-        reason: `Palabras inciertas detectadas: ${v.uncertain_words.join(", ")}`,
-        text: v.text,
-      });
-    }
-
-    if (v.requires_review) {
-      items.push({
-        verse: v.verse,
-        reason: "El modelo marcó requires_review=true para este versículo.",
-        text: v.text,
-      });
-    }
-
-    (v.review_notes || []).forEach((note) => {
-      items.push({
-        verse: v.verse,
-        reason: `Nota de revisión: ${note}`,
-        text: v.text,
-      });
-    });
+    if (v.is_partial) addReason(v.verse, "Versículo incompleto por corte o visibilidad parcial.", v.text);
+    if ((v.uncertain_words || []).length > 0) addReason(v.verse, `Palabras inciertas detectadas: ${v.uncertain_words.join(", ")}`, v.text);
+    if (v.requires_review) addReason(v.verse, "El modelo marcó requires_review=true para este versículo.", v.text);
+    (v.review_notes || []).forEach((note) => addReason(v.verse, `Nota de revisión: ${note}`, v.text));
   });
 
-  if (auditWarning) {
-    items.push({
-      verse: null,
-      reason: `Warning de auditoría visual: ${auditWarning}`,
-      text: "",
-    });
-  }
+  if (auditWarning) addReason(null, `Warning de auditoría visual: ${auditWarning}`, "");
 
   (auditPayload?.suspicions || []).forEach((suspicion) => {
     const matchedVerse = (payload.verses || []).find((v) => v.verse === suspicion.verse);
-    items.push({
-      verse: suspicion.verse,
-      reason: `Auditor visual: ${suspicion.reason}`,
-      text: matchedVerse?.text || suspicion.text,
-    });
+    addReason(suspicion.verse, `Auditor visual: ${suspicion.reason}`, matchedVerse?.text || suspicion.text);
   });
 
-  return items;
+  return Array.from(groups.values());
 }
 
 async function runVisualAudit({ client, imageName, b64, parsed }) {
