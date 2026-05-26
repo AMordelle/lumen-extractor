@@ -49,6 +49,7 @@ Esto permite modelar correctamente casos como:
 - cierre de un capítulo y comienzo del siguiente en la misma página;
 - fragmentos bíblicos parciales sin numeración visible;
 - continuidad desde página anterior y hacia página siguiente.
+- transición basada en coherencia estructural incluso cuando el encabezado visual sea ambiguo.
 
 ### Estructura resumida
 
@@ -77,6 +78,22 @@ Esto permite modelar correctamente casos como:
 ```
 
 Si no se puede determinar con certeza el libro o capítulo, se usa `null` en el campo correspondiente de esa sección.
+
+## Coherencia estructural de capítulos (PR9.1)
+
+La detección de capítulos **no depende solo de encabezados visuales**. El extractor combina:
+
+- secuencia de versículos;
+- reinicios de numeración (`verse=1`);
+- continuidad narrativa/documental;
+- encabezados visibles como evidencia secundaria.
+
+Reglas operativas:
+
+- un reinicio `verse=1` dentro de una misma sección se trata como señal fuerte de posible nueva sección/capítulo;
+- retrocesos de versículo (ej. `7:6 → 7:1`, `5:15 → 5:3`) se marcan como inconsistencias estructurales;
+- si la estructura no permite determinar capítulo con confianza, se prefiere `chapter=null` antes que inventar capítulo;
+- incoherencias significativas generan warnings estructurales y fuerzan `requires_manual_review=true`.
 
 ## Campo `position` por versículo
 

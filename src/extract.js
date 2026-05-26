@@ -58,7 +58,11 @@ Reglas obligatorias:
 23. No marques un versículo para revisión únicamente por diferencias menores de acentuación, inclinación del acento, diéresis, puntuación menor, mayúsculas/minúsculas o tipografía, siempre que la palabra base visible sea la misma.
 24. La revisión debe activarse cuando exista duda sobre la palabra base, no sobre detalles gráficos menores.
 25. Si al inicio de la página hay texto bíblico visible que viene de una página anterior o no tiene número visible, DEBES incluirlo estructuralmente en sections[].verses[] como fragmento (verse=null si aplica), con is_partial=true y position=continues_from_previous_page o fragment_without_visible_number según corresponda.
-26. Nunca omitas ese fragmento inicial limitándote a warnings: debe existir en sections[].verses[] con el texto visible literal.`;
+26. Nunca omitas ese fragmento inicial limitándote a warnings: debe existir en sections[].verses[] con el texto visible literal.
+27. La detección de capítulos debe priorizar coherencia estructural (secuencia de versículos, reinicios lógicos y continuidad narrativa) por encima de encabezados visuales aislados.
+28. Si aparece verse=1 después de versículos avanzados dentro de la misma sección, evalúa abrir nueva sección y no mezclarlo automáticamente con el capítulo previo.
+29. Si hay contradicción fuerte entre encabezado visible y secuencia interna coherente, prioriza coherencia documental y marca warning/review.
+30. Si no puedes determinar capítulo con suficiente coherencia estructural, usa chapter=null en vez de adivinar.`;
 
 const AUDIT_SYSTEM_PROMPT = `Compara visualmente el texto extraído contra la imagen palabra por palabra.
 
@@ -245,6 +249,61 @@ function validatePayload(payload, imageName) {
   }
 
   return { valid: errors.length === 0, errors };
+}
+
+function analyzeStructuralConsistency(payload) {
+  const warnings = [];
+  const reviewReasons = [];
+  let severe = false;
+
+  const addWarning = (warning) => {
+    if (!warnings.includes(warning)) warnings.push(warning);
+  };
+  const addReviewReason = (reason) => {
+    if (!reviewReasons.includes(reason)) reviewReasons.push(reason);
+  };
+
+  (payload.sections || []).forEach((section, sectionIndex) => {
+    let previousVerse = null;
+    let verseOneCount = 0;
+
+    (section.verses || []).forEach((v, verseIndex) => {
+      if (!Number.isInteger(v.verse)) return;
+      if (v.verse === 1) verseOneCount += 1;
+
+      if (Number.isInteger(previousVerse)) {
+        if (v.verse < previousVerse && v.verse !== 1) {
+          addWarning(
+            `Inconsistencia estructural: retroceso sospechoso de versículos en section ${sectionIndex} (índice ${verseIndex}) ${previousVerse}→${v.verse}.`,
+          );
+          addReviewReason("Posible inconsistencia estructural en secuencia de versículos.");
+          severe = true;
+        }
+
+        if (v.verse === 1 && previousVerse >= 2) {
+          if (Number.isInteger(section.chapter)) {
+            addWarning(
+              `Inconsistencia estructural: reinicio de versículo detectado dentro de chapter ${section.chapter} en section ${sectionIndex}.`,
+            );
+          } else {
+            addWarning(`Ambigüedad estructural: reinicio de versículo detectado en sección con chapter=null (section ${sectionIndex}).`);
+          }
+          addReviewReason("Posible inconsistencia estructural en secuencia de versículos.");
+          severe = true;
+        }
+      }
+
+      previousVerse = v.verse;
+    });
+
+    if (verseOneCount > 1) {
+      addWarning(`Inconsistencia estructural: múltiples verse=1 dentro de la misma section ${sectionIndex}.`);
+      addReviewReason("Posible inconsistencia estructural en secuencia de versículos.");
+      severe = true;
+    }
+  });
+
+  return { warnings, reviewReasons, severe };
 }
 
 function validateAuditPayload(payload, imageName) {
@@ -496,6 +555,15 @@ async function main() {
   await fs.writeFile(`output/raw_responses/${base}.json`, JSON.stringify(response, null, 2), "utf-8");
 
   const parsed = JSON.parse(response.output_text);
+  const structural = analyzeStructuralConsistency(parsed);
+  if (structural.warnings.length > 0) {
+    parsed.warnings = [...new Set([...(parsed.warnings || []), ...structural.warnings])];
+  }
+  if (structural.reviewReasons.length > 0) {
+    parsed.review_reasons = [...new Set([...(parsed.review_reasons || []), ...structural.reviewReasons])];
+  }
+  if (structural.severe) parsed.requires_manual_review = true;
+
   const validation = validatePayload(parsed, imageName);
   if (!validation.valid) {
     throw new Error(`JSON inválido tras validación local: ${validation.errors.join(", ")}`);
