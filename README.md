@@ -199,11 +199,65 @@ Se agregan `items` cuando ocurre cualquiera de estos casos:
 - el auditor visual detecta sospechas;
 - la auditoría visual no pudo completarse o respondió de forma inválida.
 
+
+## Constructor de continuidad documental entre páginas (PR10)
+
+Después de extraer páginas individuales, puedes construir una capa derivada de continuidad entre páginas consecutivas **sin modificar** los JSON originales en `output/pages_json/`.
+
+El constructor:
+
+- lee JSON ya validados basados en `sections[].verses[]`;
+- busca señales estructurales de continuidad entre pares consecutivos de páginas;
+- detecta fragmentos de cierre (`continues_on_next_page` o `is_partial=true`) y fragmentos de apertura (`continues_from_previous_page` o `fragment_without_visible_number`);
+- genera un archivo derivado en `output/continuity/` con `images[]` y `connections[]`;
+- es conservador: si no hay señales claras no crea conexión;
+- si hay señales parciales, crea conexión con `confidence="low"` y `requires_manual_review=true`.
+
+### Comando
+
+```bash
+npm run continuity -- AI156_0018 AI156_0019
+```
+
+También acepta rutas completas a JSON:
+
+```bash
+npm run continuity -- output/pages_json/AI156_0018.json output/pages_json/AI156_0019.json
+```
+
+Y múltiples páginas consecutivas:
+
+```bash
+npm run continuity -- AI156_0018 AI156_0019 AI156_0020 AI156_0021
+```
+
+### Salida
+
+Se crea `output/continuity/<primera>__<ultima>.json` con la forma:
+
+- `images`: lista de imágenes procesadas en orden;
+- `connections`: conexiones detectadas entre páginas consecutivas.
+
+Cada conexión incluye:
+
+- `from_image`, `to_image`;
+- `book`, `chapter`, `verse`;
+- `previous_fragment`, `next_fragment`;
+- `resolved_text` (incluye unión de palabra cortada por guion cuando aplique);
+- `confidence`, `requires_manual_review`, `notes`.
+
+### Unión de palabras cortadas por guion
+
+Si el fragmento anterior termina con guion (ej. `vivien-`) y el siguiente inicia con continuación (ej. `tes ...`), se resuelve como `vivientes ...`:
+
+- se elimina el guion final del fragmento previo;
+- se une directamente con la primera palabra del siguiente fragmento;
+- se conserva intacto el resto del texto (sin modernizar ni corregir ortografía).
+
 ## Limitaciones actuales
 
 - No hace procesamiento masivo.
 - No usa base de datos ni interfaz gráfica.
 - No exporta PDF.
-- No une capítulos/páginas.
 - No hace corrección bíblica avanzada ni comparación con otras Biblias.
 - No devuelve bounding boxes ni coordenadas visuales.
