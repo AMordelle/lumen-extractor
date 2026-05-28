@@ -28,6 +28,28 @@ function normalizeBookName(book) {
   return book.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim().replace(/\s+/g, " ");
 }
 
+function BOOK_ALIASES() {
+  return new Map([
+    ["genesis", "Génesis"],
+    ["genesis", "Génesis"],
+    ["gen", "Génesis"],
+    ["genesis", "Génesis"],
+    ["éxodo", "Éxodo"],
+    ["exodo", "Éxodo"],
+    ["exodus", "Éxodo"],
+  ]);
+}
+
+function canonicalBookName(book, knownByNorm) {
+  if (typeof book !== "string" || book.trim() === "") return null;
+  const norm = normalizeBookName(book);
+  if (!norm) return book;
+  const alias = BOOK_ALIASES().get(norm);
+  if (alias) return alias;
+  if (knownByNorm.has(norm)) return knownByNorm.get(norm);
+  return book.trim().replace(/\s+/g, " ");
+}
+
 function verseKey(book, chapter, verse) {
   return `${normalizeBookName(book) || "null"}|${chapter ?? "null"}|${verse ?? "null"}`;
 }
@@ -137,14 +159,23 @@ function findContinuityForEntry(entry, byConnection) {
   return null;
 }
 
-function upsertVerse(books, booksMap, entry, text, sources) {
-  const bookKey = entry.book ?? "__UNKNOWN_BOOK__";
-  if (!booksMap.has(bookKey)) {
-    const node = { book: entry.book, chapters: [] };
-    books.push(node);
-    booksMap.set(bookKey, { node, chapters: new Map() });
+function upsertVerse(books, booksMap, entry, text, sources, metadata) {
+  const normBook = normalizeBookName(entry.book) || "__UNKNOWN_BOOK__";
+  const canonical = canonicalBookName(entry.book, booksMap.__knownByNorm || new Map());
+  if (!booksMap.__knownByNorm) booksMap.__knownByNorm = new Map();
+
+  if (entry.book && booksMap.__knownByNorm.has(normBook) && booksMap.__knownByNorm.get(normBook) !== canonical) {
+    metadata.warnings.push("Se fusionaron variantes de nombre de libro bajo una clave documental normalizada.");
   }
-  const state = booksMap.get(bookKey);
+
+  if (!booksMap.has(normBook)) {
+    const node = { book: canonical, chapters: [] };
+    books.push(node);
+    booksMap.set(normBook, { node, chapters: new Map() });
+    if (entry.book) booksMap.__knownByNorm.set(normBook, canonical);
+  }
+
+  const state = booksMap.get(normBook);
   const chapterKey = entry.chapter ?? "__UNKNOWN_CHAPTER__";
   if (!state.chapters.has(chapterKey)) {
     const chapter = { chapter: entry.chapter, verses: [] };
@@ -153,6 +184,7 @@ function upsertVerse(books, booksMap, entry, text, sources) {
   }
   state.chapters.get(chapterKey).verses.push({ verse: entry.verse, text, sources });
 }
+
 
 function materializeDocument(flatVerses, byConnection, metadata) {
   const books = [];
@@ -183,7 +215,7 @@ function materializeDocument(flatVerses, byConnection, metadata) {
         { image: c.from_image, position: "continues_on_next_page" },
         { image: c.to_image, position: "continues_from_previous_page" },
       ];
-      upsertVerse(books, booksMap, { ...entry, book: c.book ?? entry.book, chapter: c.chapter ?? entry.chapter, verse: c.verse ?? entry.verse }, c.resolved_text, sources);
+      upsertVerse(books, booksMap, { ...entry, book: c.book ?? entry.book, chapter: c.chapter ?? entry.chapter, verse: c.verse ?? entry.verse }, c.resolved_text, sources, metadata);
 
       if (c.requires_manual_review === true || c.confidence === "low") {
         addWarning(metadata, `Continuidad aplicada con revisión pendiente: ${connId}.`);
@@ -196,8 +228,15 @@ function materializeDocument(flatVerses, byConnection, metadata) {
       addWarning(metadata, `Continuidad no resuelta para fragmento en ${entry.image} (${entry.book ?? "null"}/${entry.chapter ?? "null"}/${entry.verse ?? "null"}).`);
     }
 
-    upsertVerse(books, booksMap, entry, entry.text, [{ image: entry.image, position: entry.position || "complete_on_page" }]);
+    upsertVerse(books, booksMap, entry, entry.text, [{ image: entry.image, position: entry.position || "complete_on_page" }], metadata);
   }
+
+  const seen = new Set();
+  books.forEach((b) => {
+    const k = normalizeBookName(b.book) || "__UNKNOWN_BOOK__";
+    if (seen.has(k)) addWarning(metadata, "Persisten libros equivalentes tras normalización; revisar fusión documental.");
+    seen.add(k);
+  });
 
   return books;
 }

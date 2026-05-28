@@ -272,6 +272,9 @@ Principios del ensamblado:
 
 - prioridad estructural de `output/pages_json/`;
 - uso de continuidad solo cuando hay conexión explícita válida;
+- agrupa libros usando clave normalizada (case-insensitive, sin acentos y sin espacios redundantes) para evitar dividir el mismo libro en múltiples bloques;
+- la normalización de `book` aplica solo a comparación/agrupación documental; no altera texto bíblico ni JSON fuente;
+- el nombre de salida del libro se mantiene estable/canónico dentro del documento (primera forma válida o alias interno).
 - sin reinterpretar, modernizar, corregir ortografía ni completar texto faltante;
 - fragmentos sin continuidad válida permanecen explícitos y generan warnings.
 - si pasas páginas/JSON, intenta cargar automáticamente archivos compatibles desde `output/continuity/`;
