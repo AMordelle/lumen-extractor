@@ -274,6 +274,8 @@ Principios del ensamblado:
 - uso de continuidad solo cuando hay conexión explícita válida;
 - sin reinterpretar, modernizar, corregir ortografía ni completar texto faltante;
 - fragmentos sin continuidad válida permanecen explícitos y generan warnings.
+- si pasas páginas/JSON, intenta cargar automáticamente archivos compatibles desde `output/continuity/`;
+- si pasas archivos de continuidad explícitos, los aplica de forma prioritaria y también puede complementar con compatibles del conjunto procesado.
 
 ### Comando
 
@@ -312,6 +314,7 @@ Validaciones documentales incorporadas:
 - duplicados de versículo;
 - continuidad contradictoria;
 - fragmentos parciales sin continuidad resuelta;
+- continuidad aplicada con revisión pendiente (`confidence="low"` o `requires_manual_review=true`);
 - alertas que requieren revisión manual.
 
 ## Limitaciones actuales
