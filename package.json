@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "extract": "node src/extract.js"
+    "extract": "node src/extract.js",
+    "continuity": "node src/continuity.js"
   },
   "dependencies": {
     "openai": "^4.102.0"
