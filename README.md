@@ -257,6 +257,69 @@ Si el fragmento anterior termina con guion (ej. `vivien-`) y el siguiente inicia
 - se une directamente con la primera palabra del siguiente fragmento;
 - se conserva intacto el resto del texto (sin modernizar ni corregir ortografía).
 
+
+## Constructor de documento bíblico continuo (PR11)
+
+`build-document` construye una **capa derivada y conservadora** de documento continuo a partir de extracción y continuidad, sin modificar fuentes originales.
+
+Diferencias de capas:
+
+- **Extracción** (`output/pages_json/`): fuente primaria, estructura base por `sections[]`.
+- **Continuidad** (`output/continuity/`): capa secundaria de conexiones entre páginas consecutivas con `resolved_text`.
+- **Documento** (`output/document/`): ensamblado final por `book -> chapter -> verse`, preservando texto original y trazabilidad.
+
+Principios del ensamblado:
+
+- prioridad estructural de `output/pages_json/`;
+- uso de continuidad solo cuando hay conexión explícita válida;
+- agrupa libros usando clave normalizada (case-insensitive, sin acentos y sin espacios redundantes) para evitar dividir el mismo libro en múltiples bloques;
+- la normalización de `book` aplica solo a comparación/agrupación documental; no altera texto bíblico ni JSON fuente;
+- el nombre de salida del libro se mantiene estable/canónico dentro del documento (primera forma válida o alias interno).
+- sin reinterpretar, modernizar, corregir ortografía ni completar texto faltante;
+- fragmentos sin continuidad válida permanecen explícitos y generan warnings.
+- si pasas páginas/JSON, intenta cargar automáticamente archivos compatibles desde `output/continuity/`;
+- si pasas archivos de continuidad explícitos, los aplica de forma prioritaria y también puede complementar con compatibles del conjunto procesado.
+
+### Comando
+
+```bash
+npm run build-document -- <inputs>
+```
+
+Entradas válidas:
+
+- identificadores de página (`AI156_0018`);
+- rutas de JSON de páginas (`output/pages_json/AI156_0018.json`);
+- archivos de continuidad (`output/continuity/AI156_0018__AI156_0020.json`).
+
+Ejemplos:
+
+```bash
+npm run build-document -- AI156_0018 AI156_0019 AI156_0020
+npm run build-document -- output/pages_json/AI156_0018.json output/pages_json/AI156_0019.json
+npm run build-document -- output/continuity/AI156_0018__AI156_0020.json
+```
+
+### Salida
+
+Se genera en `output/document/` un JSON con:
+
+- `books[]` agrupado por libro/capítulo/versículo;
+- versículos con `text` final y `sources[]` mínimas (`image`, `position`);
+- `metadata` con:
+  - `generated_from`;
+  - `continuity_files`;
+  - `warnings`;
+  - `requires_manual_review`.
+
+Validaciones documentales incorporadas:
+
+- duplicados de versículo;
+- continuidad contradictoria;
+- fragmentos parciales sin continuidad resuelta;
+- continuidad aplicada con revisión pendiente (`confidence="low"` o `requires_manual_review=true`);
+- alertas que requieren revisión manual.
+
 ## Limitaciones actuales
 
 - No hace procesamiento masivo.

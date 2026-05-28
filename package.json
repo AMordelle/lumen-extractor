@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "extract": "node src/extract.js",
-    "continuity": "node src/continuity.js"
+    "continuity": "node src/continuity.js",
+    "build-document": "node src/build-document.js"
   },
   "dependencies": {
     "openai": "^4.102.0"
