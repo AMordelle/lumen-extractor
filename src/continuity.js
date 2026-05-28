@@ -64,7 +64,17 @@ function getFirstCandidate(verses) {
 
 function isEvidentCut(text) {
   if (typeof text !== "string") return false;
-  return /[-–—]\s*$/.test(text) || /\S$/.test(text);
+  return /[-–—]\s*$/.test(text.trimEnd());
+}
+
+function normalizeBookName(book) {
+  if (typeof book !== "string") return null;
+  return book
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, " ");
 }
 
 function buildResolvedText(previousFragment, nextFragment) {
@@ -88,12 +98,15 @@ function assessConnection(prev, next) {
   const notes = [];
   let strongSignals = 0;
 
-  if (prev.book !== null && next.book !== null && prev.book === next.book) {
+  const prevBookNormalized = normalizeBookName(prev.book);
+  const nextBookNormalized = normalizeBookName(next.book);
+
+  if (prevBookNormalized && nextBookNormalized && prevBookNormalized === nextBookNormalized) {
     strongSignals += 1;
-  } else if (prev.book !== null && next.book !== null && prev.book !== next.book) {
+  } else if (prevBookNormalized && nextBookNormalized && prevBookNormalized !== nextBookNormalized) {
     return null;
   } else {
-    notes.push("Book ausente en uno de los fragmentos.");
+    notes.push("Book ausente o no normalizable en uno de los fragmentos.");
   }
 
   if (prev.chapter !== null && next.chapter !== null && prev.chapter === next.chapter) {
@@ -177,12 +190,24 @@ async function main() {
     const assessed = assessConnection(previousFragment, nextFragment);
     if (!assessed) continue;
 
+    const inheritedReference = nextFragment.verse === null
+      ? {
+          book: previousFragment.book ?? nextFragment.book ?? null,
+          chapter: previousFragment.chapter ?? nextFragment.chapter ?? null,
+          verse: previousFragment.verse ?? nextFragment.verse ?? null,
+        }
+      : {
+          book: previousFragment.book ?? nextFragment.book ?? null,
+          chapter: previousFragment.chapter ?? nextFragment.chapter ?? null,
+          verse: previousFragment.verse ?? nextFragment.verse ?? null,
+        };
+
     connections.push({
       from_image: current.image,
       to_image: next.image,
-      book: previousFragment.book ?? nextFragment.book ?? null,
-      chapter: previousFragment.chapter ?? nextFragment.chapter ?? null,
-      verse: previousFragment.verse ?? nextFragment.verse ?? null,
+      book: inheritedReference.book,
+      chapter: inheritedReference.chapter,
+      verse: inheritedReference.verse,
       previous_fragment: previousFragment.text,
       next_fragment: nextFragment.text,
       resolved_text: assessed.resolvedText,

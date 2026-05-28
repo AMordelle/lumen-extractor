@@ -212,6 +212,9 @@ El constructor:
 - genera un archivo derivado en `output/continuity/` con `images[]` y `connections[]`;
 - es conservador: si no hay señales claras no crea conexión;
 - si hay señales parciales, crea conexión con `confidence="low"` y `requires_manual_review=true`.
+- permite continuidad cuando el fragmento inicial de la página siguiente tiene `verse=null` si la señal estructural es clara;
+- en esos casos hereda referencia documental (`book`, `chapter`, `verse`) desde el fragmento final anterior para la conexión derivada;
+- normaliza `book` solo para comparación (case-insensitive, sin acentos), sin modificar los textos originales de salida.
 
 ### Comando
 
