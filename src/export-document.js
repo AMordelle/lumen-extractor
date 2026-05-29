@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { resolveGeneratedJsonPath } from "./naming.js";
 
 const DOCUMENT_DIR = path.resolve("output/document");
 const EXPORT_DIR = path.resolve("output/export");
@@ -8,13 +9,11 @@ function usage() {
   console.log("Uso: npm run export-document -- <document-json>");
 }
 
-function normalizeInputArg(arg) {
+async function normalizeInputArg(arg) {
   const trimmed = String(arg || "").trim();
   if (!trimmed) return null;
-  if (trimmed.endsWith(".json") || trimmed.includes("/") || trimmed.includes("\\")) {
-    return path.isAbsolute(trimmed) ? trimmed : path.resolve(trimmed);
-  }
-  return path.join(DOCUMENT_DIR, `${trimmed}.json`);
+  const canonicalFileName = trimmed.endsWith(".json") ? path.basename(trimmed) : `${trimmed}.json`;
+  return resolveGeneratedJsonPath(DOCUMENT_DIR, trimmed, canonicalFileName);
 }
 
 function renderVerseNumber(verse) {
@@ -156,7 +155,7 @@ async function main() {
     process.exit(1);
   }
 
-  const inputPath = normalizeInputArg(args[0]);
+  const inputPath = await normalizeInputArg(args[0]);
   const raw = await fs.readFile(inputPath, "utf8");
   const document = JSON.parse(raw);
   const baseName = path.basename(inputPath, ".json");
