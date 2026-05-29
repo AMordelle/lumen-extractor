@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { imageNameFromGeneratedJsonPath, pageJsonName, rangeJsonName, resolveGeneratedJsonPath } from "./naming.js";
 
 const PAGES_JSON_DIR = path.resolve("output/pages_json");
 const CONTINUITY_DIR = path.resolve("output/continuity");
@@ -9,22 +10,14 @@ function usage() {
   console.log("   o: npm run continuity -- output/pages_json/AI156_0018.json output/pages_json/AI156_0019.json");
 }
 
-function normalizeInputArg(arg) {
+async function normalizeInputArg(arg) {
   const trimmed = String(arg || "").trim();
   if (!trimmed) return null;
-
-  const maybePath = trimmed.endsWith(".json") || trimmed.includes("/") || trimmed.includes("\\");
-  if (maybePath) {
-    return path.isAbsolute(trimmed) ? trimmed : path.resolve(trimmed);
-  }
-
-  const baseName = trimmed.endsWith(".jpg") ? trimmed.slice(0, -4) : trimmed;
-  return path.join(PAGES_JSON_DIR, `${baseName}.json`);
+  return resolveGeneratedJsonPath(PAGES_JSON_DIR, trimmed, pageJsonName(trimmed));
 }
 
 function getImageNameFromPath(jsonPath) {
-  const stem = path.basename(jsonPath, ".json");
-  return `${stem}.jpg`;
+  return imageNameFromGeneratedJsonPath(jsonPath);
 }
 
 function flattenVerses(page) {
@@ -150,9 +143,7 @@ function assessConnection(prev, next) {
 }
 
 function buildOutputFileName(images) {
-  const first = images[0].replace(/\.jpg$/i, "");
-  const last = images[images.length - 1].replace(/\.jpg$/i, "");
-  return `${first}__${last}.json`;
+  return rangeJsonName(images);
 }
 
 async function main() {
@@ -162,7 +153,7 @@ async function main() {
     process.exit(1);
   }
 
-  const files = args.map(normalizeInputArg).filter(Boolean);
+  const files = (await Promise.all(args.map(normalizeInputArg))).filter(Boolean);
   const pages = [];
 
   for (const filePath of files) {

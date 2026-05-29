@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import OpenAI from "openai";
+import { auditJsonName, pageJsonName, rawResponseJsonName, reviewJsonName } from "./naming.js";
 
 const PAGE_TYPES = new Set([
   "biblical_text",
@@ -549,10 +550,12 @@ async function main() {
   await fs.mkdir("output/audit", { recursive: true });
   await fs.mkdir("output/review", { recursive: true });
 
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const base = `${path.parse(imageName).name}_${stamp}`;
+  const pageJsonFile = pageJsonName(imageName);
+  const rawResponseFile = rawResponseJsonName(imageName);
+  const auditJsonFile = auditJsonName(imageName);
+  const reviewJsonFile = reviewJsonName(imageName);
 
-  await fs.writeFile(`output/raw_responses/${base}.json`, JSON.stringify(response, null, 2), "utf-8");
+  await fs.writeFile(path.join("output/raw_responses", rawResponseFile), JSON.stringify(response, null, 2), "utf-8");
 
   const parsed = JSON.parse(response.output_text);
   const structural = analyzeStructuralConsistency(parsed);
@@ -569,14 +572,14 @@ async function main() {
     throw new Error(`JSON inválido tras validación local: ${validation.errors.join(", ")}`);
   }
 
-  await fs.writeFile(`output/pages_json/${base}.json`, JSON.stringify(parsed, null, 2), "utf-8");
+  await fs.writeFile(path.join("output/pages_json", pageJsonFile), JSON.stringify(parsed, null, 2), "utf-8");
 
   let auditPayload = null;
   let auditWarning = null;
   try {
     const { response: auditResponse, parsedAudit, skipped } = await runVisualAudit({ client, imageName, b64, parsed });
     if (!skipped && auditResponse) {
-      await fs.writeFile(`output/audit/${base}.json`, JSON.stringify(auditResponse, null, 2), "utf-8");
+      await fs.writeFile(path.join("output/audit", auditJsonFile), JSON.stringify(auditResponse, null, 2), "utf-8");
     }
 
     const auditValidation = validateAuditPayload(parsedAudit, imageName);
@@ -596,21 +599,21 @@ async function main() {
       requires_manual_review: true,
       items: reviewItems,
     };
-    await fs.writeFile(`output/review/${base}.json`, JSON.stringify(reviewPayload, null, 2), "utf-8");
+    await fs.writeFile(path.join("output/review", reviewJsonFile), JSON.stringify(reviewPayload, null, 2), "utf-8");
   }
 
   console.log(`Extracción completada: ${imageName}`);
-  console.log(`Raw: output/raw_responses/${base}.json`);
-  console.log(`Validado: output/pages_json/${base}.json`);
+  console.log(`Raw: output/raw_responses/${rawResponseFile}`);
+  console.log(`Validado: output/pages_json/${pageJsonFile}`);
   if (auditPayload) {
     if ((auditPayload.suspicions || []).length > 0) {
-      console.log(`Auditoría dirigida: output/audit/${base}.json`);
+      console.log(`Auditoría dirigida: output/audit/${auditJsonFile}`);
     } else {
       console.log("Auditoría dirigida sin sospechas adicionales.");
     }
   }
   if (auditWarning) console.log(`Auditoría con warning: ${auditWarning}`);
-  if (parsed.requires_manual_review || reviewItems.length > 0) console.log(`Revisión: output/review/${base}.json`);
+  if (parsed.requires_manual_review || reviewItems.length > 0) console.log(`Revisión: output/review/${reviewJsonFile}`);
 }
 
 main().catch((err) => {

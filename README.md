@@ -123,6 +123,24 @@ Se generan archivos en:
 - `output/audit/`: respuesta estructurada del auditor visual de fidelidad.
 - `output/review/`: resumen de revisión manual con incidencias del extractor y sospechas del auditor.
 
+
+## Nomenclatura de archivos
+
+A partir de PR13, todos los artefactos generados usan nombres cortos, estables y predecibles. La raíz de una página es el identificador de la imagen sin extensión, por ejemplo `AI156_0018`. La raíz documental de un lote siempre usa la primera y la última página efectiva del proceso, separadas por doble guion bajo: `AI156_0018__AI156_0032`.
+
+Convención por carpeta:
+
+- `output/pages_json/`: una página validada por archivo, por ejemplo `AI156_0018.json`, `AI156_0019.json`, `AI156_0020.json`.
+- `output/review/`: resumen de revisión manual por página, por ejemplo `AI156_0018.review.json` o `AI156_0019.review.json`.
+- `output/audit/`: respuesta del auditor visual solo cuando la auditoría se ejecuta, por ejemplo `AI156_0018.audit.json` o `AI156_0019.audit.json`.
+- `output/continuity/`: continuidad de un lote, por ejemplo `AI156_0018__AI156_0032.json`.
+- `output/document/`: documento ensamblado del mismo lote, con la misma raíz visual que continuidad, por ejemplo `AI156_0018__AI156_0032.json`.
+- `output/export/`: exportaciones legibles con la misma raíz documental, por ejemplo `AI156_0018__AI156_0032.md` y `AI156_0018__AI156_0032.txt`. En el futuro podrá añadirse `AI156_0018__AI156_0032.pdf`.
+
+No se agregan timestamps, hashes, cantidad de páginas ni sufijos redundantes a los nombres de salida. Si un proceso recibe varias páginas, el rango canónico se calcula exclusivamente con la primera y la última página del lote (`AI156_0018 AI156_0019 AI156_0020 AI156_0021` → `AI156_0018__AI156_0021`).
+
+Los comandos siguen aceptando rutas explícitas y nombres base simples. Cuando es razonable, las etapas derivadas conservan compatibilidad de lectura con archivos existentes de convenciones anteriores, pero las nuevas salidas se escriben con la nomenclatura PR13.
+
 ## Auditor visual de fidelidad documental
 
 El auditor visual es una **segunda pasada dirigida** con OpenAI.

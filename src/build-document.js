@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { imageNameFromGeneratedJsonPath, pageJsonName, rangeJsonName, resolveGeneratedJsonPath } from "./naming.js";
 
 const PAGES_JSON_DIR = path.resolve("output/pages_json");
 const CONTINUITY_DIR = path.resolve("output/continuity");
@@ -9,18 +10,17 @@ function usage() {
   console.log("Uso: npm run build-document -- <inputs>");
 }
 
-function normalizeInputArg(arg) {
+async function normalizeInputArg(arg) {
   const trimmed = String(arg || "").trim();
   if (!trimmed) return null;
-  if (trimmed.endsWith(".json") || trimmed.includes("/") || trimmed.includes("\\")) {
+  if (isContinuityInput(trimmed)) {
     return path.isAbsolute(trimmed) ? trimmed : path.resolve(trimmed);
   }
-  const baseName = trimmed.endsWith(".jpg") ? trimmed.slice(0, -4) : trimmed;
-  return path.join(PAGES_JSON_DIR, `${baseName}.json`);
+  return resolveGeneratedJsonPath(PAGES_JSON_DIR, trimmed, pageJsonName(trimmed));
 }
 
 function getImageNameFromPath(jsonPath) {
-  return `${path.basename(jsonPath, ".json")}.jpg`;
+  return imageNameFromGeneratedJsonPath(jsonPath);
 }
 
 function normalizeBookName(book) {
@@ -58,14 +58,21 @@ function connectionKey(c) {
   return `${c.from_image}|${c.to_image}|${verseKey(c.book ?? null, c.chapter ?? null, c.verse ?? null)}`;
 }
 
+function isContinuityInput(inputPath) {
+  const value = String(inputPath);
+  return value.includes(`${path.sep}output${path.sep}continuity${path.sep}`)
+    || value.includes("/output/continuity/")
+    || value.startsWith("output/continuity/")
+    || value.includes("\\output\\continuity\\")
+    || value.startsWith("output\\continuity\\");
+}
+
 function isContinuityFile(inputPath) {
   return inputPath.includes(`${path.sep}output${path.sep}continuity${path.sep}`);
 }
 
 function buildOutputFileName(images) {
-  const first = images[0].replace(/\.jpg$/i, "");
-  const last = images[images.length - 1].replace(/\.jpg$/i, "");
-  return `${first}__${last}.json`;
+  return rangeJsonName(images);
 }
 
 function addWarning(metadata, message, manual = true) {
@@ -249,7 +256,7 @@ async function main() {
   }
 
   const metadata = { generated_from: [], continuity_files: [], warnings: [], requires_manual_review: false };
-  const normalizedInputs = args.map(normalizeInputArg).filter(Boolean);
+  const normalizedInputs = (await Promise.all(args.map(normalizeInputArg))).filter(Boolean);
   const explicitContinuityPaths = normalizedInputs.filter(isContinuityFile);
   let pagePaths = normalizedInputs.filter((p) => !isContinuityFile(p));
 
@@ -260,7 +267,7 @@ async function main() {
       images.add(c.from_image);
       images.add(c.to_image);
     }
-    pagePaths = [...images].map((img) => path.join(PAGES_JSON_DIR, img.replace(/\.jpg$/i, "") + ".json"));
+    pagePaths = await Promise.all([...images].map((img) => resolveGeneratedJsonPath(PAGES_JSON_DIR, img, pageJsonName(img))));
   }
 
   const pages = [];
