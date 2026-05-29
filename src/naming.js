@@ -39,6 +39,10 @@ export function rangeJsonName(images) {
   return `${canonicalRangeStem(images)}.json`;
 }
 
+export function rangeSummaryJsonName(images) {
+  return `${canonicalRangeStem(images)}.range.json`;
+}
+
 function stripKnownSuffixes(stem) {
   return stem
     .replace(/\.review$/i, "")
