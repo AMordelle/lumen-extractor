@@ -137,7 +137,7 @@ Convención por carpeta:
 - `output/continuity/`: continuidad de un lote, por ejemplo `AI156_0018__AI156_0032.json`.
 - `output/ranges/`: resumen de clasificación/extracción de un rango, por ejemplo `AI156_0018__AI156_0050.range.json`.
 - `output/document/`: documento ensamblado del mismo lote, con la misma raíz visual que continuidad, por ejemplo `AI156_0018__AI156_0032.json`.
-- `output/export/`: exportaciones legibles con la misma raíz documental, por ejemplo `AI156_0018__AI156_0032.md` y `AI156_0018__AI156_0032.txt`. En el futuro podrá añadirse `AI156_0018__AI156_0032.pdf`.
+- `output/export/`: exportaciones legibles con la misma raíz documental, por ejemplo `AI156_0018__AI156_0032.md`, `AI156_0018__AI156_0032.txt` y `AI156_0018__AI156_0032.pdf`.
 
 No se agregan timestamps, hashes, cantidad de páginas ni sufijos redundantes a los nombres de salida. Si un proceso recibe varias páginas, el rango canónico se calcula exclusivamente con la primera y la última página del lote (`AI156_0018 AI156_0019 AI156_0020 AI156_0021` → `AI156_0018__AI156_0021`).
 
@@ -482,10 +482,59 @@ El Markdown usa encabezados de libro y capítulo, por ejemplo `# Génesis` y `##
 
 Si `metadata.requires_manual_review=true` o existen warnings documentales, la exportación agrega una sección final de **Revisión pendiente**. Esta sección queda separada del cuerpo bíblico principal para no contaminar el texto exportado. También se agrega una sección breve de trazabilidad con páginas fuente, continuidad usada cuando exista y fecha de generación.
 
+## Exportación PDF para validación documental (PR15)
+
+`export-pdf` genera una **salida PDF de validación humana** a partir del mismo documento continuo usado por `export-document`. El PDF no es la base de datos de Lumen ni sustituye el JSON de `output/document/`: sirve para leer libros completos y comprobar visualmente que el pipeline produjo un documento legible, continuo y coherente.
+
+Esta exportación es una capa derivada y conserva las mismas reglas documentales:
+
+- no modifica `output/document/`, `output/pages_json/` ni `output/continuity/`;
+- no reinterpreta texto;
+- no corrige ortografía;
+- no moderniza lenguaje;
+- no altera acentos, puntuación, mayúsculas/minúsculas ni palabras antiguas;
+- usa el texto ya ensamblado en el `document.json` existente.
+
+### Comando
+
+```bash
+npm run export-pdf -- <document-json-or-basename>
+```
+
+Acepta rutas explícitas al documento JSON:
+
+```bash
+npm run export-pdf -- output/document/AI156_0018__AI156_0032.json
+```
+
+También acepta el basename documental compatible con `output/document/`:
+
+```bash
+npm run export-pdf -- AI156_0018__AI156_0032
+```
+
+### Salida
+
+Crea `output/export/` si no existe y escribe un PDF con la misma raíz documental:
+
+```text
+output/export/AI156_0018__AI156_0032.pdf
+```
+
+El PDF presenta:
+
+- título de libro;
+- capítulos claramente separados;
+- versículos numerados;
+- saltos de página automáticos para lectura humana;
+- sección final de **Revisión pendiente** si `metadata.requires_manual_review=true` o existen warnings;
+- sección final de **Trazabilidad** con páginas fuente, continuidad usada cuando exista y fecha de generación.
+
+Importante: el PDF es una herramienta de revisión visual. Las capas canónicas para procesamiento de Lumen siguen siendo el documento JSON continuo y sus fuentes derivadas.
+
 ## Limitaciones actuales
 
 - No hace procesamiento masivo.
 - No usa base de datos ni interfaz gráfica.
-- No exporta PDF.
 - No hace corrección bíblica avanzada ni comparación con otras Biblias.
 - No devuelve bounding boxes ni coordenadas visuales.
