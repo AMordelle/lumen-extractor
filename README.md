@@ -320,6 +320,54 @@ Validaciones documentales incorporadas:
 - continuidad aplicada con revisión pendiente (`confidence="low"` o `requires_manual_review=true`);
 - alertas que requieren revisión manual.
 
+
+## Exportación legible del documento bíblico continuo (PR12)
+
+`export-document` genera una **vista legible para humanos** a partir de un documento continuo ya ensamblado en `output/document/`. Esta capa es derivada: no modifica `output/document/`, `output/pages_json/` ni `output/continuity/`.
+
+Diferencias de capas:
+
+- **Documento** (`output/document/`): JSON estructurado por `book -> chapter -> verse`, con metadata y trazabilidad mínima para procesamiento.
+- **Exportación** (`output/export/`): representación de lectura en formatos simples, pensada para revisar el texto como un documento bíblico normal.
+
+Principios de conservación textual:
+
+- no reinterpreta texto;
+- no corrige ortografía;
+- no moderniza lenguaje;
+- no altera puntuación, acentos, mayúsculas/minúsculas ni palabras antiguas;
+- conserva los versículos parciales tal como quedaron en el documento continuo, sin inventar contenido;
+- mantiene integradas las continuidades ya resueltas por la capa documental.
+
+### Comando
+
+```bash
+npm run export-document -- <document-json>
+```
+
+Acepta rutas a documentos JSON, por ejemplo:
+
+```bash
+npm run export-document -- output/document/AI156_0018__AI156_0032.json
+```
+
+También puede recibir un nombre base compatible con `output/document/`:
+
+```bash
+npm run export-document -- AI156_0018__AI156_0032
+```
+
+### Salida
+
+Crea `output/export/` si no existe y genera dos archivos con el mismo nombre base del documento:
+
+- `output/export/<documento>.md`
+- `output/export/<documento>.txt`
+
+El Markdown usa encabezados de libro y capítulo, por ejemplo `# Génesis` y `## Capítulo 1`, seguido por versículos numerados. El TXT usa una forma simple con títulos en mayúsculas, por ejemplo `GÉNESIS` y `CAPÍTULO 1`.
+
+Si `metadata.requires_manual_review=true` o existen warnings documentales, la exportación agrega una sección final de **Revisión pendiente**. Esta sección queda separada del cuerpo bíblico principal para no contaminar el texto exportado. También se agrega una sección breve de trazabilidad con páginas fuente, continuidad usada cuando exista y fecha de generación.
+
 ## Limitaciones actuales
 
 - No hace procesamiento masivo.
