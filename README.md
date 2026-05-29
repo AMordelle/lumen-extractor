@@ -122,6 +122,7 @@ Se generan archivos en:
 - `output/pages_json/`: JSON validado localmente de la extracción.
 - `output/audit/`: respuesta estructurada del auditor visual de fidelidad.
 - `output/review/`: resumen de revisión manual con incidencias del extractor y sospechas del auditor.
+- `output/ranges/`: resumen de extracción por rango con páginas procesadas y omitidas.
 
 
 ## Nomenclatura de archivos
@@ -134,12 +135,107 @@ Convención por carpeta:
 - `output/review/`: resumen de revisión manual por página, por ejemplo `AI156_0018.review.json` o `AI156_0019.review.json`.
 - `output/audit/`: respuesta del auditor visual solo cuando la auditoría se ejecuta, por ejemplo `AI156_0018.audit.json` o `AI156_0019.audit.json`.
 - `output/continuity/`: continuidad de un lote, por ejemplo `AI156_0018__AI156_0032.json`.
+- `output/ranges/`: resumen de clasificación/extracción de un rango, por ejemplo `AI156_0018__AI156_0050.range.json`.
 - `output/document/`: documento ensamblado del mismo lote, con la misma raíz visual que continuidad, por ejemplo `AI156_0018__AI156_0032.json`.
 - `output/export/`: exportaciones legibles con la misma raíz documental, por ejemplo `AI156_0018__AI156_0032.md` y `AI156_0018__AI156_0032.txt`. En el futuro podrá añadirse `AI156_0018__AI156_0032.pdf`.
 
 No se agregan timestamps, hashes, cantidad de páginas ni sufijos redundantes a los nombres de salida. Si un proceso recibe varias páginas, el rango canónico se calcula exclusivamente con la primera y la última página del lote (`AI156_0018 AI156_0019 AI156_0020 AI156_0021` → `AI156_0018__AI156_0021`).
 
 Los comandos siguen aceptando rutas explícitas y nombres base simples. Cuando es razonable, las etapas derivadas conservan compatibilidad de lectura con archivos existentes de convenciones anteriores, pero las nuevas salidas se escriben con la nomenclatura PR13.
+
+
+## Extracción por rango con clasificación previa (PR14)
+
+Para procesar varias imágenes consecutivas sin decidir manualmente cuáles omitir, usa:
+
+```bash
+npm run extract-range -- AI156_0018 AI156_0050
+```
+
+También puedes pasar los extremos con extensión:
+
+```bash
+npm run extract-range -- AI156_0018.jpg AI156_0050.jpg
+```
+
+El comando resuelve todas las imágenes dentro de `AI156_images/`. Los extremos del rango deben compartir prefijo y ancho numérico; por ejemplo, `AI156_0018` a `AI156_0050` se expande como `AI156_0018.jpg`, `AI156_0019.jpg`, ..., `AI156_0050.jpg`.
+
+Flujo operativo:
+
+1. Expande el rango de imágenes.
+2. Clasifica cada página con el mismo proveedor visual antes de extraer.
+3. Extrae automáticamente solo páginas clasificadas como `biblical_text`.
+4. Omite `illustration`, `blank` y `non_biblical_text`.
+5. Marca `uncertain` como omitida con `requires_manual_review=true`.
+6. Guarda un resumen en `output/ranges/`.
+
+La clasificación previa es conservadora y devuelve:
+
+- `biblical_text`: página con versículos bíblicos visibles o fragmentos bíblicos útiles;
+- `illustration`: página principalmente visual sin versículos útiles;
+- `blank`: página vacía o sin contenido útil;
+- `non_biblical_text`: texto visible no correspondiente a versículos útiles;
+- `uncertain`: no se pudo confirmar con suficiente certeza.
+
+Importante: una página de inicio de libro o capítulo **sí se extrae** si contiene versículos bíblicos visibles, aunque también incluya título, advertencia, encabezado, introducción, transición de capítulo o fragmentos parciales.
+
+Si `output/pages_json/<imagen>.json` ya existe y parece válido, `extract-range` no reextrae esa página por defecto; registra `status="already_extracted"`. Si no existe, reutiliza la extracción individual existente (`npm run extract`) para no duplicar la lógica de transcripción, auditoría ni revisión.
+
+### Resumen de rango
+
+Cada ejecución escribe `output/ranges/<primera>__<última>.range.json`, por ejemplo:
+
+```json
+{
+  "range": {
+    "from": "AI156_0018.jpg",
+    "to": "AI156_0050.jpg"
+  },
+  "processed": [
+    {
+      "image": "AI156_0018.jpg",
+      "classification": "biblical_text",
+      "confidence": "high",
+      "status": "extracted",
+      "outputs": {
+        "page_json": "output/pages_json/AI156_0018.json",
+        "review": "output/review/AI156_0018.review.json"
+      }
+    }
+  ],
+  "skipped": [
+    {
+      "image": "AI156_0022.jpg",
+      "classification": "illustration",
+      "confidence": "medium",
+      "status": "skipped",
+      "requires_manual_review": false,
+      "reason": "Página principalmente ilustrativa sin versículos bíblicos visibles."
+    },
+    {
+      "image": "AI156_0023.jpg",
+      "classification": "uncertain",
+      "confidence": "low",
+      "status": "skipped",
+      "requires_manual_review": true,
+      "reason": "No se pudo confirmar si contiene texto bíblico útil."
+    }
+  ],
+  "metadata": {
+    "total": 33,
+    "extracted": 30,
+    "already_extracted": 0,
+    "skipped": 3,
+    "requires_manual_review": true
+  }
+}
+```
+
+Interpretación:
+
+- `processed[]` contiene páginas con texto bíblico útil que fueron extraídas o ya tenían extracción válida.
+- `skipped[]` contiene omisiones explícitas; ninguna página no bíblica desaparece silenciosamente.
+- `requires_manual_review=true` en una página omitida indica que la clasificación fue incierta o inválida y debe revisarse manualmente.
 
 ## Auditor visual de fidelidad documental
 

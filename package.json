@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "extract": "node src/extract.js",
+    "extract-range": "node src/extract-range.js",
     "continuity": "node src/continuity.js",
     "build-document": "node src/build-document.js",
     "export-document": "node src/export-document.js"
